@@ -318,20 +318,35 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 	_ = s.send(protocol.TurnDone(result.Timings, result.Skipped))
 	s.sendPhase(protocol.TurnPhaseIdle)
 
-	if s.conversationID != "" && result.Transcript != "" && !result.Skipped && !result.UsedRetry && result.AssistantAudio != nil {
-		turnIndex := s.turnIndex
-		s.turnIndex++
-		s.conversations.PersistTurnAsync(storage.SaveTurnInput{
-			ConversationID:      s.conversationID,
-			UserID:              s.userID,
-			TurnIndex:           turnIndex,
-			UserTranscript:      result.Transcript,
-			AssistantTranscript: result.ReplyText,
-			UserWav:             wavData,
-			AssistantAudio:      result.AssistantAudio.Data,
-			AssistantFormat:     result.AssistantAudio.Format,
-			Timings:             result.Timings,
-		})
+	if result.Transcript != "" && !result.Skipped && !result.UsedRetry {
+		if s.engine.KB != nil {
+			knowledge.PersistLiveFactsAsync(s.engine.KB, knowledge.LiveFactsInput{
+				UserID:         s.userID,
+				Transcript:     result.Transcript,
+				ConversationID: s.conversationID,
+				TurnIndex:      s.turnIndex,
+			})
+		}
+
+		if s.conversationID != "" {
+			turnIndex := s.turnIndex
+			s.turnIndex++
+
+			saveInput := storage.SaveTurnInput{
+				ConversationID:      s.conversationID,
+				UserID:              s.userID,
+				TurnIndex:           turnIndex,
+				UserTranscript:      result.Transcript,
+				AssistantTranscript: result.ReplyText,
+				UserWav:             wavData,
+				Timings:             result.Timings,
+			}
+			if result.AssistantAudio != nil {
+				saveInput.AssistantAudio = result.AssistantAudio.Data
+				saveInput.AssistantFormat = result.AssistantAudio.Format
+			}
+			s.conversations.PersistTurnAsync(saveInput)
+		}
 	}
 
 	return nil

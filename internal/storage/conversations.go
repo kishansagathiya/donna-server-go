@@ -80,25 +80,51 @@ func assistantMime(format string) string {
 }
 
 func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error {
-	userPath, assistantPath := audioPaths(input.UserID, input.ConversationID, input.TurnIndex, input.AssistantFormat)
-
-	if err := c.DB.UploadStorage(ctx, audioBucket, userPath, "audio/wav", input.UserWav); err != nil {
-		return err
+	assistantFormat := input.AssistantFormat
+	if assistantFormat == "" {
+		assistantFormat = "wav"
 	}
-	if err := c.DB.UploadStorage(ctx, audioBucket, assistantPath, assistantMime(input.AssistantFormat), input.AssistantAudio); err != nil {
-		return err
+
+	var userPath, assistantPath string
+	if len(input.UserWav) > 0 {
+		userPath, assistantPath = audioPaths(input.UserID, input.ConversationID, input.TurnIndex, assistantFormat)
+		if err := c.DB.UploadStorage(ctx, audioBucket, userPath, "audio/wav", input.UserWav); err != nil {
+			log.Warn("user audio upload failed — saving transcript only", map[string]any{
+				"conversationId": input.ConversationID,
+				"turnIndex":      input.TurnIndex,
+				"error":          err.Error(),
+			})
+			userPath = ""
+		}
+	}
+	if len(input.AssistantAudio) > 0 && userPath != "" {
+		_, assistantPath = audioPaths(input.UserID, input.ConversationID, input.TurnIndex, assistantFormat)
+		if err := c.DB.UploadStorage(ctx, audioBucket, assistantPath, assistantMime(assistantFormat), input.AssistantAudio); err != nil {
+			log.Warn("assistant audio upload failed — saving transcript only", map[string]any{
+				"conversationId": input.ConversationID,
+				"turnIndex":      input.TurnIndex,
+				"error":          err.Error(),
+			})
+			assistantPath = ""
+		}
+	} else {
+		assistantPath = ""
 	}
 
 	body := map[string]any{
-		"conversation_id":        input.ConversationID,
-		"turn_index":             input.TurnIndex,
-		"user_transcript":        input.UserTranscript,
-		"assistant_transcript":   input.AssistantTranscript,
-		"user_audio_path":        userPath,
-		"assistant_audio_path":   assistantPath,
-		"user_audio_mime":        "audio/wav",
-		"assistant_audio_mime":   assistantMime(input.AssistantFormat),
-		"timings":                input.Timings,
+		"conversation_id":      input.ConversationID,
+		"turn_index":           input.TurnIndex,
+		"user_transcript":      input.UserTranscript,
+		"assistant_transcript": input.AssistantTranscript,
+		"timings":              input.Timings,
+	}
+	if userPath != "" {
+		body["user_audio_path"] = userPath
+		body["user_audio_mime"] = "audio/wav"
+	}
+	if assistantPath != "" {
+		body["assistant_audio_path"] = assistantPath
+		body["assistant_audio_mime"] = assistantMime(assistantFormat)
 	}
 	if err := c.DB.Insert(ctx, "conversation_turns", body, nil); err != nil {
 		return err
