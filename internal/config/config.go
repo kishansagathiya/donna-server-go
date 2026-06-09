@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 
 	llmModel := os.Getenv("DONNA_LLM_MODEL")
 	if llmModel == "" {
-		llmModel = "deepseek/deepseek-v4-flash"
+		llmModel = "deepseek/deepseek-v4-pro"
 	}
 
 	sttModel := os.Getenv("DONNA_STT_MODEL")
