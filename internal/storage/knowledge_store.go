@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
@@ -117,23 +118,92 @@ func (k *Knowledge) GetConversationTurns(ctx context.Context, conversationID str
 	return rows, nil
 }
 
+const (
+	turnSettleInterval = 3 * time.Second
+	turnWaitTimeout    = 60 * time.Second
+)
+
+func (k *Knowledge) isConversationEnded(ctx context.Context, conversationID string) (bool, error) {
+	q := url.Values{}
+	q.Set("select", "ended_at")
+	q.Set("id", "eq."+conversationID)
+
+	var rows []struct {
+		EndedAt *string `json:"ended_at"`
+	}
+	if err := k.DB.Get(ctx, "conversations", q, &rows); err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, nil
+	}
+	return rows[0].EndedAt != nil && strings.TrimSpace(*rows[0].EndedAt) != "", nil
+}
+
+// WaitForConversationTurns blocks until the conversation has ended and all async
+// turn writes have settled. Previously this returned as soon as the first turn
+// appeared, causing the compiler to process only turn 0.
 func (k *Knowledge) WaitForConversationTurns(ctx context.Context, conversationID string) ([]ConversationTurn, error) {
-	deadline := time.Now().Add(45 * time.Second)
+	deadline := time.Now().Add(turnWaitTimeout)
+
+	for time.Now().Before(deadline) {
+		ended, err := k.isConversationEnded(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+		if ended {
+			break
+		}
+		if err := sleepOrDone(ctx, time.Second); err != nil {
+			return k.GetConversationTurns(ctx, conversationID)
+		}
+	}
+
+	var (
+		lastCount   = -1
+		stableSince time.Time
+	)
 	for time.Now().Before(deadline) {
 		turns, err := k.GetConversationTurns(ctx, conversationID)
 		if err != nil {
 			return nil, err
 		}
-		if len(turns) > 0 {
-			return turns, nil
+		count := len(turns)
+		if count == lastCount {
+			if count > 0 && time.Since(stableSince) >= turnSettleInterval {
+				log.Print("conversation turns settled", map[string]any{
+					"conversationId": conversationID,
+					"turns":          count,
+				})
+				return turns, nil
+			}
+		} else {
+			lastCount = count
+			stableSince = time.Now()
 		}
-		select {
-		case <-ctx.Done():
+		if err := sleepOrDone(ctx, time.Second); err != nil {
 			return k.GetConversationTurns(ctx, conversationID)
-		case <-time.After(time.Second):
 		}
 	}
-	return k.GetConversationTurns(ctx, conversationID)
+
+	turns, err := k.GetConversationTurns(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	log.Warn("conversation turn wait timed out", map[string]any{
+		"conversationId": conversationID,
+		"turns":          len(turns),
+	})
+	return turns, nil
+}
+
+func sleepOrDone(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 func (k *Knowledge) UpsertVoiceSource(ctx context.Context, input struct {
@@ -196,26 +266,46 @@ func (k *Knowledge) SyncConversationSources(ctx context.Context, userID, convers
 	return k.GetSourcesForConversation(ctx, conversationID)
 }
 
-func (k *Knowledge) IsConversationCompiled(ctx context.Context, conversationID string) (bool, error) {
+func (k *Knowledge) latestCompiledTurnCount(ctx context.Context, conversationID string) (int, error) {
 	q := url.Values{}
-	q.Set("select", "id,turns_count")
+	q.Set("select", "turns_count")
 	q.Set("conversation_id", "eq."+conversationID)
 	q.Set("status", "eq.completed")
 	q.Set("order", "created_at.desc")
 	q.Set("limit", "1")
 
 	var rows []struct {
-		ID         string `json:"id"`
-		TurnsCount *int   `json:"turns_count"`
+		TurnsCount *int `json:"turns_count"`
 	}
 	if err := k.DB.Get(ctx, "kb_compile_log", q, &rows); err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 || rows[0].TurnsCount == nil {
+		return 0, nil
+	}
+	return *rows[0].TurnsCount, nil
+}
+
+func conversationFullyCompiled(compiledTurns, currentTurns int) bool {
+	return compiledTurns > 0 && currentTurns > 0 && compiledTurns >= currentTurns
+}
+
+func (k *Knowledge) IsConversationCompiled(ctx context.Context, conversationID string) (bool, error) {
+	compiledTurns, err := k.latestCompiledTurnCount(ctx, conversationID)
+	if err != nil {
 		log.Warn("failed to check compile status", map[string]any{"error": err.Error()})
 		return false, nil
 	}
-	if len(rows) == 0 {
+	if compiledTurns == 0 {
 		return false, nil
 	}
-	return rows[0].TurnsCount != nil && *rows[0].TurnsCount > 0, nil
+
+	turns, err := k.GetConversationTurns(ctx, conversationID)
+	if err != nil {
+		log.Warn("failed to count conversation turns for compile check", map[string]any{"error": err.Error()})
+		return false, nil
+	}
+	return conversationFullyCompiled(compiledTurns, len(turns)), nil
 }
 
 func (k *Knowledge) CreateCompileLog(ctx context.Context, userID, conversationID string) (string, error) {
