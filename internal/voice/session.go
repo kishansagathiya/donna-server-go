@@ -281,9 +281,6 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 			encoded := base64.StdEncoding.EncodeToString(data)
 			_ = s.send(protocol.AudioOut(seq, format, encoded))
 		},
-		OnAudioFlush: func(format string) {
-			_ = s.send(protocol.AudioFlush(format))
-		},
 	}, pipeline.TurnOptions{
 		AudioMeta: quality.AudioQualityMeta,
 		CanRetry:  !s.hasRetried,

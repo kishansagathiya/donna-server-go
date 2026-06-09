@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
@@ -33,7 +32,6 @@ type TurnCallbacks struct {
 	OnTranscript func(string)
 	OnReply      func(string)
 	OnAudioChunk func(seq int, format string, data []byte)
-	OnAudioFlush func(format string)
 }
 
 type TurnOptions struct {
@@ -121,49 +119,15 @@ func (e *Engine) RunVoiceTurn(
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
-	ttsStarted := false
-	var audioParts [][]byte
-	var audioFormat string
-	sentenceBuf := &sentenceBuffer{}
-
-	speakSentence := func(sentence string) error {
-		sentence = strings.TrimSpace(sentence)
-		if sentence == "" {
-			return nil
-		}
-		if !ttsStarted {
-			phase(protocol.TurnPhaseSynthesizing)
-			ttsStarted = true
-		}
-		audio, err := e.streamTTSToClient(ctx, sentence, callbacks, &timings)
-		if err != nil {
-			return err
-		}
-		if audio != nil {
-			audioFormat = audio.Format
-			audioParts = append(audioParts, audio.Data)
-		}
-		return nil
-	}
-
 	err = e.LLM.StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false
 		}
 		replyText += chunk
-		for _, sentence := range sentenceBuf.add(chunk) {
-			if err := speakSentence(sentence); err != nil {
-				return err
-			}
-		}
 		return nil
 	})
 	if err != nil {
-		return TurnResult{}, err
-	}
-
-	if err := speakSentence(sentenceBuf.flush()); err != nil {
 		return TurnResult{}, err
 	}
 
@@ -171,12 +135,10 @@ func (e *Engine) RunVoiceTurn(
 		callbacks.OnReply(replyText)
 	}
 
-	var assistantAudio *AssistantAudio
-	if audioFormat != "" && len(audioParts) > 0 {
-		assistantAudio = &AssistantAudio{
-			Format: audioFormat,
-			Data:   concatBytes(audioParts),
-		}
+	phase(protocol.TurnPhaseSynthesizing)
+	assistantAudio, err := e.streamTTSToClient(ctx, replyText, callbacks, &timings)
+	if err != nil {
+		return TurnResult{}, err
 	}
 
 	timings.TotalMs = int(time.Since(t0).Milliseconds())
@@ -233,10 +195,6 @@ func (e *Engine) streamTTSToClient(
 
 	if format == "" || len(parts) == 0 {
 		return nil, nil
-	}
-
-	if callbacks.OnAudioFlush != nil {
-		callbacks.OnAudioFlush(format)
 	}
 
 	return &AssistantAudio{
