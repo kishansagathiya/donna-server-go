@@ -38,7 +38,7 @@ func main() {
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
-	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel)
+	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.LLMMaxTokens)
 
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 

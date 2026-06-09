@@ -24,6 +24,7 @@ type Config struct {
 	CartesiaAPIKey         string
 	ElevenLabsAPIKey       string
 	LLMModel               string
+	LLMMaxTokens           int
 	STTModel               string
 	SystemPrompt           string
 	MaxHistoryMessages     int
@@ -61,7 +62,16 @@ func Load() (*Config, error) {
 
 	llmModel := os.Getenv("DONNA_LLM_MODEL")
 	if llmModel == "" {
-		llmModel = "qwen/qwen3.7-max"
+		llmModel = "google/gemini-3.5-flash"
+	}
+
+	llmMaxTokens := 300
+	if v := os.Getenv("DONNA_LLM_MAX_TOKENS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DONNA_LLM_MAX_TOKENS: %w", err)
+		}
+		llmMaxTokens = n
 	}
 
 	sttModel := os.Getenv("DONNA_STT_MODEL")
@@ -88,6 +98,7 @@ func Load() (*Config, error) {
 		CartesiaAPIKey:         os.Getenv("CARTESIA_API_KEY"),
 		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
 		LLMModel:               llmModel,
+		LLMMaxTokens:           llmMaxTokens,
 		STTModel:               sttModel,
 		SystemPrompt:           systemPrompt,
 		MaxHistoryMessages:     20,

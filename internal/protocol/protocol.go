@@ -118,6 +118,13 @@ func AudioOut(seq int, format, data string) ServerMessage {
 	}
 }
 
+func AudioFlush(format string) ServerMessage {
+	return ServerMessage{
+		Type:        "audio.flush",
+		AudioFormat: &format,
+	}
+}
+
 func TurnDone(timings TurnTimings, skipped bool) ServerMessage {
 	msg := ServerMessage{
 		Type:    "turn.done",
