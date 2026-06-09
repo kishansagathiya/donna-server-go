@@ -106,6 +106,8 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
+	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
+	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)
 	for _, ip := range lanAddresses() {
 		log.Print(fmt.Sprintf("voice (physical device): ws://%s:%d/voice", ip, cfg.Port), nil)

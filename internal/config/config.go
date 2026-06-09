@@ -60,9 +60,9 @@ func Load() (*Config, error) {
 		jwtAudience = "authenticated"
 	}
 
-	llmModel := os.Getenv("DONNA_LLM_MODEL")
+	llmModel := strings.TrimSpace(os.Getenv("DONNA_LLM_MODEL"))
 	if llmModel == "" {
-		llmModel = "google/gemini-3.5-flash"
+		return nil, fmt.Errorf("missing required env var: DONNA_LLM_MODEL")
 	}
 
 	llmMaxTokens := 300
