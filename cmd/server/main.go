@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
@@ -76,6 +77,14 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
+	accountHandler := &account.Handler{
+		Deleter: &account.Deleter{DB: supa},
+	}
+	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
+		RequireAuth: cfg.RequireAuth,
+		Auth:        authCfg,
+	})).Delete("/account", accountHandler.ServeHTTP)
+
 	voiceHandler := &voice.Handler{
 		Config:        cfg,
 		Auth:          authCfg,
@@ -106,6 +115,7 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
+	log.Print("account: DELETE /account", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)

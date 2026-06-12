@@ -99,6 +99,26 @@ func (s *Supabase) Insert(ctx context.Context, table string, body any, dest any)
 	return nil
 }
 
+func (s *Supabase) Delete(ctx context.Context, table string, query url.Values) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.restURL(table, query), nil)
+	if err != nil {
+		return err
+	}
+	req.Header = s.headers("")
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("supabase DELETE %s %d: %s", table, res.StatusCode, string(raw))
+	}
+	return nil
+}
+
 func (s *Supabase) Patch(ctx context.Context, table string, query url.Values, body any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -186,6 +206,162 @@ func (s *Supabase) Count(ctx context.Context, table string, query url.Values) (i
 	var count int
 	fmt.Sscanf(parts[1], "%d", &count)
 	return count, nil
+}
+
+type storageListObject struct {
+	Name string  `json:"name"`
+	ID   *string `json:"id"`
+}
+
+func (s *Supabase) listStorageObjectsAtPrefix(ctx context.Context, bucket, prefix string) ([]storageListObject, error) {
+	const pageSize = 1000
+	var objects []storageListObject
+
+	for offset := 0; ; offset += pageSize {
+		body, err := json.Marshal(map[string]any{
+			"prefix": prefix,
+			"limit":  pageSize,
+			"offset": offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		u := fmt.Sprintf("%s/storage/v1/object/list/%s", s.URL, bucket)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("apikey", s.ServiceRoleKey)
+		req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		res, err := s.Client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			raw, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			return nil, fmt.Errorf("storage list %s %d: %s", bucket, res.StatusCode, string(raw))
+		}
+
+		var page []storageListObject
+		if err := json.NewDecoder(res.Body).Decode(&page); err != nil {
+			res.Body.Close()
+			return nil, err
+		}
+		res.Body.Close()
+
+		if len(page) == 0 {
+			break
+		}
+
+		objects = append(objects, page...)
+		if len(page) < pageSize {
+			break
+		}
+	}
+
+	return objects, nil
+}
+
+func (s *Supabase) collectStorageObjectPaths(ctx context.Context, bucket, prefix string) ([]string, error) {
+	entries, err := s.listStorageObjectsAtPrefix(ctx, bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var paths []string
+	for _, entry := range entries {
+		if entry.Name == "" {
+			continue
+		}
+
+		fullPath := prefix + entry.Name
+		if entry.ID == nil {
+			childPaths, err := s.collectStorageObjectPaths(ctx, bucket, fullPath+"/")
+			if err != nil {
+				return nil, err
+			}
+			paths = append(paths, childPaths...)
+			continue
+		}
+
+		paths = append(paths, fullPath)
+	}
+
+	return paths, nil
+}
+
+func (s *Supabase) ListStorageObjects(ctx context.Context, bucket, prefix string) ([]string, error) {
+	return s.collectStorageObjectPaths(ctx, bucket, prefix)
+}
+
+func (s *Supabase) DeleteStorageObjects(ctx context.Context, bucket string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	const batchSize = 100
+	for start := 0; start < len(paths); start += batchSize {
+		end := start + batchSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+
+		batch := paths[start:end]
+		body, err := json.Marshal(batch)
+		if err != nil {
+			return err
+		}
+
+		u := fmt.Sprintf("%s/storage/v1/object/%s", s.URL, bucket)
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("apikey", s.ServiceRoleKey)
+		req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		res, err := s.Client.Do(req)
+		if err != nil {
+			return err
+		}
+
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			raw, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			return fmt.Errorf("storage delete %s %d: %s", bucket, res.StatusCode, string(raw))
+		}
+		res.Body.Close()
+	}
+
+	return nil
+}
+
+func (s *Supabase) DeleteAuthUser(ctx context.Context, userID string) error {
+	u := fmt.Sprintf("%s/auth/v1/admin/users/%s", s.URL, url.PathEscape(userID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("auth delete user %d: %s", res.StatusCode, string(raw))
+	}
+	return nil
 }
 
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
