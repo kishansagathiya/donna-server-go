@@ -55,9 +55,6 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, capOutput boo
 		"model":    l.Model,
 		"messages": messages,
 		"stream":   stream,
-		"provider": map[string]any{
-			"sort": map[string]string{"by": "latency"},
-		},
 	}
 	if capOutput && l.MaxTokens > 0 {
 		payload["max_tokens"] = l.MaxTokens
