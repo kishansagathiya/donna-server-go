@@ -1,10 +1,15 @@
+// Package wav wraps raw PCM audio in a standard RIFF/WAVE container.
+// Voice clients stream PCM16; downstream STT and storage expect WAV bytes.
 package wav
 
+// PCMFormat describes the raw PCM payload before wrapping.
 type PCMFormat struct {
-	SampleRate int
-	Channels   int
+	SampleRate int // Hz, e.g. 16000
+	Channels   int // 1 = mono, 2 = stereo
 }
 
+// PCM16ToWAV prepends a 44-byte WAV header to little-endian 16-bit PCM samples.
+// The output is a complete in-memory WAV file suitable for TranscribeWAV and storage.
 func PCM16ToWAV(pcm []byte, format PCMFormat) []byte {
 	sampleRate := format.SampleRate
 	channels := format.Channels
@@ -14,20 +19,27 @@ func PCM16ToWAV(pcm []byte, format PCMFormat) []byte {
 	dataSize := len(pcm)
 
 	out := make([]byte, 44+dataSize)
+
+	// RIFF chunk: file container
 	copy(out[0:4], "RIFF")
-	putUint32LE(out[4:], uint32(36+dataSize))
+	putUint32LE(out[4:], uint32(36+dataSize)) // chunk size = rest of file minus 8 bytes
 	copy(out[8:12], "WAVE")
+
+	// fmt sub-chunk: PCM format metadata
 	copy(out[12:16], "fmt ")
-	putUint32LE(out[16:], 16)
-	putUint16LE(out[20:], 1)
+	putUint32LE(out[16:], 16)                 // sub-chunk size for PCM
+	putUint16LE(out[20:], 1)                  // audio format 1 = linear PCM
 	putUint16LE(out[22:], uint16(channels))
 	putUint32LE(out[24:], uint32(sampleRate))
-	putUint32LE(out[28:], uint32(byteRate))
-	putUint16LE(out[32:], uint16(blockAlign))
+	putUint32LE(out[28:], uint32(byteRate))   // bytes per second
+	putUint16LE(out[32:], uint16(blockAlign)) // bytes per sample frame (all channels)
 	putUint16LE(out[34:], uint16(bitsPerSample))
+
+	// data sub-chunk: raw sample bytes from the client
 	copy(out[36:40], "data")
 	putUint32LE(out[40:], uint32(dataSize))
 	copy(out[44:], pcm)
+
 	return out
 }
 
