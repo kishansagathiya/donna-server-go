@@ -49,6 +49,8 @@ type ServerMessage struct {
 	Seq          *int    `json:"seq,omitempty"`
 	AudioFormat  *string `json:"format,omitempty"`
 	AudioData    *string `json:"data,omitempty"`
+	SampleRate   *int    `json:"sampleRate,omitempty"`
+	Channels     *int    `json:"channels,omitempty"`
 	Timings      *TurnTimings `json:"timings,omitempty"`
 	Skipped      *bool   `json:"skipped,omitempty"`
 	Code         *string `json:"code,omitempty"`
@@ -109,13 +111,18 @@ func TurnReply(text string) ServerMessage {
 	return ServerMessage{Type: "turn.reply", Text: &text}
 }
 
-func AudioOut(seq int, format, data string) ServerMessage {
-	return ServerMessage{
+func AudioOut(seq int, format, data string, sampleRate, channels int) ServerMessage {
+	msg := ServerMessage{
 		Type:        "audio.out",
 		Seq:         &seq,
 		AudioFormat: &format,
 		AudioData:   &data,
 	}
+	if format == "pcm16" {
+		msg.SampleRate = &sampleRate
+		msg.Channels = &channels
+	}
+	return msg
 }
 
 func TurnDone(timings TurnTimings, skipped bool) ServerMessage {

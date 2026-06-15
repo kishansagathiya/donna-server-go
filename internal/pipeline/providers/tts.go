@@ -11,8 +11,10 @@ import (
 )
 
 type AudioChunk struct {
-	Data   []byte
-	Format string
+	Data       []byte
+	Format     string
+	SampleRate int
+	Channels   int
 }
 
 type TTS struct {
@@ -45,11 +47,12 @@ func (t *TTS) SynthesizeSpeech(ctx context.Context, text string, onChunk func(Au
 }
 
 func (t *TTS) streamOpenAI(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
+	const sampleRate = 24000
 	body, _ := json.Marshal(map[string]any{
 		"model":           "tts-1",
 		"voice":           "nova",
 		"input":           text,
-		"response_format": "mp3",
+		"response_format": "pcm",
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/audio/speech", bytes.NewReader(body))
 	if err != nil {
@@ -75,7 +78,12 @@ func (t *TTS) streamOpenAI(ctx context.Context, text string, onChunk func(AudioC
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			if err := onChunk(AudioChunk{Data: chunk, Format: "mp3"}); err != nil {
+			if err := onChunk(AudioChunk{
+				Data:       chunk,
+				Format:     "pcm16",
+				SampleRate: sampleRate,
+				Channels:   1,
+			}); err != nil {
 				return err
 			}
 		}
@@ -167,7 +175,7 @@ func (t *TTS) streamElevenLabs(ctx context.Context, text string, onChunk func(Au
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			if err := onChunk(AudioChunk{Data: chunk, Format: "mp3"}); err != nil {
+			if err := onChunk(AudioChunk{Data: chunk, Format: "mp3", Channels: 1}); err != nil {
 				return err
 			}
 		}

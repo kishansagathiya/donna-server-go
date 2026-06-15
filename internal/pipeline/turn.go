@@ -8,6 +8,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/wav"
 )
 
 const retryPrompt = "Sorry, I missed that — what were you saying?"
@@ -31,7 +32,7 @@ type TurnCallbacks struct {
 	OnPhase      func(protocol.TurnPhase)
 	OnTranscript func(string)
 	OnReply      func(string)
-	OnAudioChunk func(seq int, format string, data []byte)
+	OnAudioChunk func(seq int, chunk providers.AudioChunk)
 }
 
 type TurnOptions struct {
@@ -82,9 +83,6 @@ func (e *Engine) RunVoiceTurn(
 			return finishSkipped(phase, timings, t0, true, "failed_attempt"), nil
 		}
 		phase(protocol.TurnPhaseSynthesizing)
-		if callbacks.OnReply != nil {
-			callbacks.OnReply(retryPrompt)
-		}
 		_, _ = e.streamTTSToClient(ctx, retryPrompt, callbacks, &timings)
 		timings.TotalMs = int(time.Since(t0).Milliseconds())
 		phase(protocol.TurnPhaseDone)
@@ -131,10 +129,6 @@ func (e *Engine) RunVoiceTurn(
 		return TurnResult{}, err
 	}
 
-	if callbacks.OnReply != nil {
-		callbacks.OnReply(replyText)
-	}
-
 	phase(protocol.TurnPhaseSynthesizing)
 	assistantAudio, err := e.streamTTSToClient(ctx, replyText, callbacks, &timings)
 	if err != nil {
@@ -173,18 +167,28 @@ func (e *Engine) streamTTSToClient(
 	seq := 0
 	var parts [][]byte
 	var format string
+	var sampleRate, channels int
 
 	err := e.TTS.SynthesizeSpeech(ctx, text, func(chunk providers.AudioChunk) error {
 		if firstByte {
 			timings.TTSFirstByteMs = int(time.Since(ttsStart).Milliseconds())
+			if callbacks.OnReply != nil {
+				callbacks.OnReply(text)
+			}
 			firstByte = false
 		}
 		format = chunk.Format
+		if chunk.SampleRate > 0 {
+			sampleRate = chunk.SampleRate
+		}
+		if chunk.Channels > 0 {
+			channels = chunk.Channels
+		}
 		part := make([]byte, len(chunk.Data))
 		copy(part, chunk.Data)
 		parts = append(parts, part)
 		if callbacks.OnAudioChunk != nil {
-			callbacks.OnAudioChunk(seq, chunk.Format, part)
+			callbacks.OnAudioChunk(seq, chunk)
 		}
 		seq++
 		return nil
@@ -197,9 +201,25 @@ func (e *Engine) streamTTSToClient(
 		return nil, nil
 	}
 
+	data := concatBytes(parts)
+	saveFormat := format
+	if format == "pcm16" {
+		if sampleRate == 0 {
+			sampleRate = 24000
+		}
+		if channels == 0 {
+			channels = 1
+		}
+		data = wav.PCM16ToWAV(data, wav.PCMFormat{
+			SampleRate: sampleRate,
+			Channels:   channels,
+		})
+		saveFormat = "wav"
+	}
+
 	return &AssistantAudio{
-		Format: format,
-		Data:   concatBytes(parts),
+		Format: saveFormat,
+		Data:   data,
 	}, nil
 }
 
