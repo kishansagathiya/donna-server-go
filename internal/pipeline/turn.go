@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
@@ -14,8 +16,10 @@ import (
 const retryPrompt = "Sorry, I missed that — what were you saying?"
 
 type AssistantAudio struct {
-	Format string
-	Data   []byte
+	Format     string
+	Data       []byte
+	SampleRate int
+	Channels   int
 }
 
 type TurnResult struct {
@@ -52,7 +56,7 @@ type Engine struct {
 
 func (e *Engine) RunVoiceTurn(
 	ctx context.Context,
-	wav []byte,
+	wavData []byte,
 	history []providers.ChatMessage,
 	callbacks TurnCallbacks,
 	options TurnOptions,
@@ -67,7 +71,7 @@ func (e *Engine) RunVoiceTurn(
 	}
 
 	phase(protocol.TurnPhaseTranscribing)
-	transcript, sttMs, err := e.STT.TranscribeWAV(ctx, wav)
+	transcript, sttMs, err := e.STT.TranscribeWAV(ctx, wavData)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -83,7 +87,11 @@ func (e *Engine) RunVoiceTurn(
 			return finishSkipped(phase, timings, t0, true, "failed_attempt"), nil
 		}
 		phase(protocol.TurnPhaseSynthesizing)
-		_, _ = e.streamTTSToClient(ctx, retryPrompt, callbacks, &timings)
+		_, _ = e.streamTTSToClient(ctx, retryPrompt, callbacks, &timings, nil, func() {
+			if callbacks.OnReply != nil {
+				callbacks.OnReply(retryPrompt)
+			}
+		})
 		timings.TotalMs = int(time.Since(t0).Milliseconds())
 		phase(protocol.TurnPhaseDone)
 		return TurnResult{
@@ -99,12 +107,7 @@ func (e *Engine) RunVoiceTurn(
 
 	phase(protocol.TurnPhaseGenerating)
 	augStart := time.Now()
-	augmented := DefaultAugment(ctx, e.KB, transcript, options.UserID, options.SessionID)
-
-	profileSummary := ""
-	if e.KB != nil && e.KB.Enabled {
-		profileSummary, _ = e.KB.GetUserProfileSummary(ctx, options.UserID)
-	}
+	augmented, profileSummary := e.loadTurnContext(ctx, transcript, options.UserID, options.SessionID)
 	timings.AugmentMs = int(time.Since(augStart).Milliseconds())
 
 	systemPrompt := e.Config.SystemPrompt
@@ -117,22 +120,99 @@ func (e *Engine) RunVoiceTurn(
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
+	ttsStarted := false
+	ttsFirstByteRecorded := false
+	var audioParts [][]byte
+	var audioFormat string
+	var audioSampleRate, audioChannels int
+	var spokenParts []string
+	sentenceBuf := &sentenceBuffer{}
+
+	speakSentence := func(sentence string) error {
+		sentence = strings.TrimSpace(sentence)
+		if sentence == "" {
+			return nil
+		}
+		if !ttsStarted {
+			phase(protocol.TurnPhaseSynthesizing)
+			ttsStarted = true
+		}
+
+		partsBefore := len(spokenParts)
+		onFirstByte := func() {
+			if len(spokenParts) == partsBefore {
+				spokenParts = append(spokenParts, sentence)
+			}
+			if callbacks.OnReply != nil {
+				callbacks.OnReply(strings.Join(spokenParts, " "))
+			}
+		}
+
+		audio, err := e.streamTTSToClient(ctx, sentence, callbacks, &timings, &ttsFirstByteRecorded, onFirstByte)
+		if err != nil {
+			return err
+		}
+		if len(spokenParts) == partsBefore {
+			spokenParts = append(spokenParts, sentence)
+			if callbacks.OnReply != nil {
+				callbacks.OnReply(strings.Join(spokenParts, " "))
+			}
+		}
+		if audio != nil {
+			audioFormat = audio.Format
+			audioParts = append(audioParts, audio.Data)
+			if audio.SampleRate > 0 {
+				audioSampleRate = audio.SampleRate
+			}
+			if audio.Channels > 0 {
+				audioChannels = audio.Channels
+			}
+		}
+		return nil
+	}
+
 	err = e.LLM.StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false
 		}
 		replyText += chunk
+		for _, sentence := range sentenceBuf.add(chunk) {
+			if err := speakSentence(sentence); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return TurnResult{}, err
 	}
 
-	phase(protocol.TurnPhaseSynthesizing)
-	assistantAudio, err := e.streamTTSToClient(ctx, replyText, callbacks, &timings)
-	if err != nil {
+	if err := speakSentence(sentenceBuf.flush()); err != nil {
 		return TurnResult{}, err
+	}
+
+	var assistantAudio *AssistantAudio
+	if audioFormat != "" && len(audioParts) > 0 {
+		data := concatBytes(audioParts)
+		saveFormat := audioFormat
+		if audioFormat == "pcm16" {
+			if audioSampleRate == 0 {
+				audioSampleRate = 24000
+			}
+			if audioChannels == 0 {
+				audioChannels = 1
+			}
+			data = wav.PCM16ToWAV(data, wav.PCMFormat{
+				SampleRate: audioSampleRate,
+				Channels:   audioChannels,
+			})
+			saveFormat = "wav"
+		}
+		assistantAudio = &AssistantAudio{
+			Format: saveFormat,
+			Data:   data,
+		}
 	}
 
 	timings.TotalMs = int(time.Since(t0).Milliseconds())
@@ -144,6 +224,28 @@ func (e *Engine) RunVoiceTurn(
 		Timings:        timings,
 		AssistantAudio: assistantAudio,
 	}, nil
+}
+
+func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessionID string) (TranscriptAugmentation, string) {
+	var (
+		augmented       TranscriptAugmentation
+		profileSummary  string
+		wg              sync.WaitGroup
+	)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		augmented = DefaultAugment(ctx, e.KB, transcript, userID, sessionID)
+	}()
+	go func() {
+		defer wg.Done()
+		if e.KB != nil && e.KB.Enabled {
+			profileSummary, _ = e.KB.GetUserProfileSummary(ctx, userID)
+		}
+	}()
+	wg.Wait()
+	return augmented, profileSummary
 }
 
 func finishSkipped(phase func(protocol.TurnPhase), timings protocol.TurnTimings, t0 time.Time, skipped bool, reason string) TurnResult {
@@ -161,6 +263,8 @@ func (e *Engine) streamTTSToClient(
 	text string,
 	callbacks TurnCallbacks,
 	timings *protocol.TurnTimings,
+	ttsFirstByteRecorded *bool,
+	onFirstByte func(),
 ) (*AssistantAudio, error) {
 	ttsStart := time.Now()
 	firstByte := true
@@ -171,9 +275,14 @@ func (e *Engine) streamTTSToClient(
 
 	err := e.TTS.SynthesizeSpeech(ctx, text, func(chunk providers.AudioChunk) error {
 		if firstByte {
-			timings.TTSFirstByteMs = int(time.Since(ttsStart).Milliseconds())
-			if callbacks.OnReply != nil {
-				callbacks.OnReply(text)
+			if ttsFirstByteRecorded == nil || !*ttsFirstByteRecorded {
+				timings.TTSFirstByteMs = int(time.Since(ttsStart).Milliseconds())
+				if ttsFirstByteRecorded != nil {
+					*ttsFirstByteRecorded = true
+				}
+			}
+			if onFirstByte != nil {
+				onFirstByte()
 			}
 			firstByte = false
 		}
@@ -201,25 +310,11 @@ func (e *Engine) streamTTSToClient(
 		return nil, nil
 	}
 
-	data := concatBytes(parts)
-	saveFormat := format
-	if format == "pcm16" {
-		if sampleRate == 0 {
-			sampleRate = 24000
-		}
-		if channels == 0 {
-			channels = 1
-		}
-		data = wav.PCM16ToWAV(data, wav.PCMFormat{
-			SampleRate: sampleRate,
-			Channels:   channels,
-		})
-		saveFormat = "wav"
-	}
-
 	return &AssistantAudio{
-		Format: saveFormat,
-		Data:   data,
+		Format:     format,
+		Data:       concatBytes(parts),
+		SampleRate: sampleRate,
+		Channels:   channels,
 	}, nil
 }
 
