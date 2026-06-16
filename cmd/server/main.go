@@ -12,6 +12,7 @@ import (
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
@@ -62,6 +63,8 @@ func main() {
 	r.Use(chimiddleware.Logger)
 	r.Use(appmiddleware.CORS)
 
+	apidocs.Register(r)
+
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
@@ -108,6 +111,7 @@ func main() {
 
 	log.Print(fmt.Sprintf("listening on http://%s", addr), nil)
 	log.Print(fmt.Sprintf("health: http://127.0.0.1:%d/health", cfg.Port), nil)
+	log.Print(fmt.Sprintf("api docs: http://127.0.0.1:%d/docs", cfg.Port), nil)
 	if cfg.RequireAuth {
 		log.Print("voice auth: required (Supabase JWT)", nil)
 	} else {

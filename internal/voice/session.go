@@ -277,9 +277,9 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		OnReply: func(text string) {
 			_ = s.send(protocol.TurnReply(text))
 		},
-		OnAudioChunk: func(seq int, format string, data []byte) {
-			encoded := base64.StdEncoding.EncodeToString(data)
-			_ = s.send(protocol.AudioOut(seq, format, encoded))
+		OnAudioChunk: func(seq int, chunk providers.AudioChunk) {
+			encoded := base64.StdEncoding.EncodeToString(chunk.Data)
+			_ = s.send(protocol.AudioOut(seq, chunk.Format, encoded, chunk.SampleRate, chunk.Channels))
 		},
 	}, pipeline.TurnOptions{
 		AudioMeta: quality.AudioQualityMeta,
