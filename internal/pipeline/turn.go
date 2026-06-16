@@ -44,6 +44,7 @@ type TurnOptions struct {
 	CanRetry  bool
 	UserID    string
 	SessionID string
+	Mode      InteractionMode
 }
 
 type Engine struct {
@@ -83,7 +84,7 @@ func (e *Engine) RunVoiceTurn(
 	}
 
 	if classification == TranscriptFailedAttempt {
-		if !options.CanRetry {
+		if options.Mode.IsListen() || !options.CanRetry {
 			return finishSkipped(phase, timings, t0, true, "failed_attempt"), nil
 		}
 		phase(protocol.TurnPhaseSynthesizing)
@@ -103,6 +104,15 @@ func (e *Engine) RunVoiceTurn(
 
 	if callbacks.OnTranscript != nil {
 		callbacks.OnTranscript(transcript)
+	}
+
+	if options.Mode.IsListen() {
+		timings.TotalMs = int(time.Since(t0).Milliseconds())
+		phase(protocol.TurnPhaseDone)
+		return TurnResult{
+			Transcript: transcript,
+			Timings:    timings,
+		}, nil
 	}
 
 	phase(protocol.TurnPhaseGenerating)

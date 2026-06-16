@@ -43,6 +43,7 @@ type Session struct {
 	hasRetried     bool
 	conversationID string
 	turnIndex      int
+	mode           pipeline.InteractionMode
 	ended          bool
 	writeMu        sync.Mutex
 }
@@ -104,6 +105,10 @@ func (s *Session) handleSessionStart(ctx context.Context, msg *protocol.ClientMe
 	}
 	s.started = true
 	s.hasRetried = false
+	s.mode = pipeline.ModeTalk
+	if msg.Mode != nil {
+		s.mode = pipeline.ParseMode(*msg.Mode)
+	}
 
 	if msg.UserID != nil && *msg.UserID != "" {
 		s.userID = *msg.UserID
@@ -286,6 +291,7 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		CanRetry:  !s.hasRetried,
 		UserID:    s.userID,
 		SessionID: s.sessionID,
+		Mode:      s.mode,
 	})
 	if err != nil {
 		log.Warn("turn failed", map[string]any{
@@ -302,7 +308,7 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		s.hasRetried = true
 	}
 
-	if result.Transcript != "" && !result.Skipped && !result.UsedRetry {
+	if result.Transcript != "" && !result.Skipped && !result.UsedRetry && !s.mode.IsListen() {
 		s.appendHistory(result.Transcript, result.ReplyText)
 	}
 

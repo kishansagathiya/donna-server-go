@@ -23,6 +23,7 @@ type chatRequest struct {
 	Message   string                  `json:"message"`
 	History   []providers.ChatMessage `json:"history,omitempty"`
 	SessionID string                  `json:"session_id,omitempty"`
+	Mode      string                  `json:"mode,omitempty"`
 }
 
 type chatResponse struct {
@@ -71,14 +72,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	history := append([]providers.ChatMessage(nil), body.History...)
 
+	mode := pipeline.ParseMode(body.Mode)
+
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, message, history)
+		h.streamReply(w, r, userID, sessionID, message, history, mode)
 		return
 	}
 
 	result, err := h.Engine.RunTextTurn(r.Context(), message, history, pipeline.TextTurnCallbacks{}, pipeline.TurnOptions{
 		UserID:    userID,
 		SessionID: sessionID,
+		Mode:      mode,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -110,6 +114,7 @@ func (h *Handler) streamReply(
 	r *http.Request,
 	userID, sessionID, message string,
 	history []providers.ChatMessage,
+	mode pipeline.InteractionMode,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -141,6 +146,7 @@ func (h *Handler) streamReply(
 	}, pipeline.TurnOptions{
 		UserID:    userID,
 		SessionID: sessionID,
+		Mode:      mode,
 	})
 	if err != nil {
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
@@ -153,6 +159,15 @@ func (h *Handler) streamReply(
 	}
 
 	h.persistFacts(userID, sessionID, result.Transcript)
+
+	if mode.IsListen() {
+		writeSSE("done", mustJSON(chatResponse{
+			Reply:     "",
+			SessionID: sessionID,
+			Timings:   result.Timings,
+		}))
+		return
+	}
 
 	writeSSE("done", mustJSON(chatResponse{
 		Reply:     result.ReplyText,

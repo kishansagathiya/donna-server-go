@@ -35,6 +35,15 @@ func (e *Engine) RunTextTurn(
 		return finishSkipped(phase, timings, t0, true, "empty"), nil
 	}
 
+	if options.Mode.IsListen() {
+		timings.TotalMs = int(time.Since(t0).Milliseconds())
+		phase(protocol.TurnPhaseDone)
+		return TurnResult{
+			Transcript: message,
+			Timings:    timings,
+		}, nil
+	}
+
 	phase(protocol.TurnPhaseGenerating)
 	augStart := time.Now()
 	augmented := DefaultAugment(ctx, e.KB, message, options.UserID, options.SessionID)

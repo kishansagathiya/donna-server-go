@@ -30,6 +30,7 @@ type ClientMessage struct {
 
 	UserID    *string `json:"userId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
+	Mode      *string `json:"mode,omitempty"`
 
 	Seq        *int    `json:"seq,omitempty"`
 	Format     *string `json:"format,omitempty"`
