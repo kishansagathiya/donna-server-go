@@ -130,56 +130,6 @@ func (e *Engine) RunVoiceTurn(
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
-	ttsStarted := false
-	ttsFirstByteRecorded := false
-	var audioParts [][]byte
-	var audioFormat string
-	var audioSampleRate, audioChannels int
-	var spokenParts []string
-	sentenceBuf := &sentenceBuffer{}
-
-	speakSentence := func(sentence string) error {
-		sentence = strings.TrimSpace(sentence)
-		if sentence == "" {
-			return nil
-		}
-		if !ttsStarted {
-			phase(protocol.TurnPhaseSynthesizing)
-			ttsStarted = true
-		}
-
-		partsBefore := len(spokenParts)
-		onFirstByte := func() {
-			if len(spokenParts) == partsBefore {
-				spokenParts = append(spokenParts, sentence)
-			}
-			if callbacks.OnReply != nil {
-				callbacks.OnReply(strings.Join(spokenParts, " "))
-			}
-		}
-
-		audio, err := e.streamTTSToClient(ctx, sentence, callbacks, &timings, &ttsFirstByteRecorded, onFirstByte)
-		if err != nil {
-			return err
-		}
-		if len(spokenParts) == partsBefore {
-			spokenParts = append(spokenParts, sentence)
-			if callbacks.OnReply != nil {
-				callbacks.OnReply(strings.Join(spokenParts, " "))
-			}
-		}
-		if audio != nil {
-			audioFormat = audio.Format
-			audioParts = append(audioParts, audio.Data)
-			if audio.SampleRate > 0 {
-				audioSampleRate = audio.SampleRate
-			}
-			if audio.Channels > 0 {
-				audioChannels = audio.Channels
-			}
-		}
-		return nil
-	}
 
 	err = e.LLM.StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
@@ -187,10 +137,8 @@ func (e *Engine) RunVoiceTurn(
 			firstToken = false
 		}
 		replyText += chunk
-		for _, sentence := range sentenceBuf.add(chunk) {
-			if err := speakSentence(sentence); err != nil {
-				return err
-			}
+		if callbacks.OnReply != nil {
+			callbacks.OnReply(replyText)
 		}
 		return nil
 	})
@@ -198,30 +146,37 @@ func (e *Engine) RunVoiceTurn(
 		return TurnResult{}, err
 	}
 
-	if err := speakSentence(sentenceBuf.flush()); err != nil {
-		return TurnResult{}, err
-	}
+	replyText = strings.TrimSpace(replyText)
 
 	var assistantAudio *AssistantAudio
-	if audioFormat != "" && len(audioParts) > 0 {
-		data := concatBytes(audioParts)
-		saveFormat := audioFormat
-		if audioFormat == "pcm16" {
-			if audioSampleRate == 0 {
-				audioSampleRate = 24000
-			}
-			if audioChannels == 0 {
-				audioChannels = 1
-			}
-			data = wav.PCM16ToWAV(data, wav.PCMFormat{
-				SampleRate: audioSampleRate,
-				Channels:   audioChannels,
-			})
-			saveFormat = "wav"
+	if replyText != "" {
+		phase(protocol.TurnPhaseSynthesizing)
+		audio, err := e.streamTTSToClient(ctx, replyText, callbacks, &timings, nil, nil)
+		if err != nil {
+			return TurnResult{}, err
 		}
-		assistantAudio = &AssistantAudio{
-			Format: saveFormat,
-			Data:   data,
+		if audio != nil {
+			saveFormat := audio.Format
+			data := audio.Data
+			audioSampleRate := audio.SampleRate
+			audioChannels := audio.Channels
+			if audio.Format == "pcm16" {
+				if audioSampleRate == 0 {
+					audioSampleRate = 24000
+				}
+				if audioChannels == 0 {
+					audioChannels = 1
+				}
+				data = wav.PCM16ToWAV(data, wav.PCMFormat{
+					SampleRate: audioSampleRate,
+					Channels:   audioChannels,
+				})
+				saveFormat = "wav"
+			}
+			assistantAudio = &AssistantAudio{
+				Format: saveFormat,
+				Data:   data,
+			}
 		}
 	}
 
