@@ -1,0 +1,444 @@
+openapi: 3.0.3
+info:
+  title: Donna API
+  description: |
+    HTTP and WebSocket API for the Donna voice backend (`donna-server-go`).
+
+    ## Authentication
+
+    Protected routes require a Supabase access token (JWT) in the `Authorization` header:
+
+    ```
+    Authorization: Bearer <access_token>
+    ```
+
+    The `/voice` WebSocket accepts the same token as a query parameter when auth is enabled:
+
+    ```
+    ws://host:8787/voice?token=<access_token>
+    ```
+
+    When `SUPABASE_URL` is unset (local dev), auth is disabled and tokens are optional.
+
+    ## Voice WebSocket protocol
+
+    After connecting to `/voice`, exchange JSON text frames using the schemas in
+    **VoiceClientMessage** and **VoiceServerMessage** below. Typical flow:
+
+    1. Client sends `session.start`
+    2. Server responds with `session.ready` and `turn.phase: idle`
+    3. Client streams `audio.chunk` frames (base64 PCM16)
+    4. Client sends `turn.end` to trigger STT → LLM → TTS
+    5. Server emits `turn.transcript`, `turn.reply`, `audio.out` chunks, then `turn.done`
+    6. Client sends `session.end` to close the session
+  version: 1.0.0
+  contact:
+    name: Donna
+servers:
+  - url: http://localhost:8787
+    description: Local development
+  - url: https://donna-server-production.up.railway.app
+    description: Production (Railway)
+
+tags:
+  - name: Health
+    description: Service health
+  - name: Knowledge
+    description: Knowledge base ingest and formats
+  - name: Account
+    description: Account management
+  - name: Voice
+    description: Real-time voice WebSocket
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns service status and whether JWT auth is required.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                ok: true
+                service: donna-server-go
+                authRequired: true
+
+  /knowledge/formats:
+    get:
+      tags: [Knowledge]
+      summary: Supported ingest formats
+      description: Lists MIME types and extractors available for knowledge ingest.
+      operationId: getKnowledgeFormats
+      responses:
+        "200":
+          description: Supported formats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeFormatsResponse"
+
+  /knowledge/ingest:
+    post:
+      tags: [Knowledge]
+      summary: Ingest knowledge
+      description: |
+        Ingest a URL, plain-text note, or file into the user's knowledge base.
+        Content is extracted, stored, and queued for compilation into facts.
+
+        Accepts either `application/json` (url or text) or `multipart/form-data` (file upload, max 15 MB).
+      operationId: postKnowledgeIngest
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestJsonRequest"
+            examples:
+              url:
+                summary: Ingest a URL
+                value:
+                  url: https://example.com/article
+              text:
+                summary: Ingest a text note
+                value:
+                  text: Meeting notes from today...
+                  title: Team sync
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Document, image, or audio file (see GET /knowledge/formats)
+      responses:
+        "200":
+          description: Ingest queued successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestSuccessResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: missing_token
+        "413":
+          description: File too large (> 15 MB)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: file_too_large
+        "415":
+          description: Unsupported media type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: unsupported_content_type
+        "422":
+          description: Invalid request body or extraction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Knowledge base persistence disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: knowledge_disabled
+
+  /account:
+    delete:
+      tags: [Account]
+      summary: Delete account
+      description: |
+        Permanently deletes the authenticated user's data: storage objects,
+        knowledge base rows, conversations, and the Supabase auth user.
+      operationId: deleteAccount
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Account deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteAccountResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: missing_token
+        "500":
+          description: Deletion failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: delete_failed
+                message: account deletion unavailable
+
+  /voice:
+    get:
+      tags: [Voice]
+      summary: Voice WebSocket
+      description: |
+        Upgrades to a WebSocket connection for real-time voice interaction (STT → LLM → TTS).
+
+        **Connection:** `ws://host:8787/voice?token=<jwt>` (token required when auth is enabled)
+
+        **Subprotocol:** none — messages are JSON text frames.
+
+        See component schemas **VoiceClientMessage** and **VoiceServerMessage** for the wire format.
+      operationId: connectVoice
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: Supabase JWT (required when auth is enabled)
+          schema:
+            type: string
+      responses:
+        "101":
+          description: WebSocket upgrade successful
+        "401":
+          description: WebSocket closed with code 4401 (missing or invalid token)
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase access token
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [ok, service, authRequired]
+      properties:
+        ok:
+          type: boolean
+        service:
+          type: string
+          example: donna-server-go
+        authRequired:
+          type: boolean
+          description: Whether JWT auth is enforced on protected routes
+
+    KnowledgeFormatsResponse:
+      type: object
+      required: [mime_types, extractors]
+      properties:
+        mime_types:
+          type: array
+          items:
+            type: string
+          example: [text/plain, application/pdf, image/jpeg, audio/mp4]
+        extractors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractorInfo"
+
+    ExtractorInfo:
+      type: object
+      required: [name, priority]
+      properties:
+        name:
+          type: string
+          example: plain_text
+        priority:
+          type: integer
+          example: 10
+
+    IngestJsonRequest:
+      type: object
+      description: Provide either `url` or `text` (not both).
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Web page or document URL to fetch and extract
+        text:
+          type: string
+          description: Plain-text note content
+        title:
+          type: string
+          description: Optional title for text notes
+
+    IngestSuccessResponse:
+      type: object
+      required: [source_id, asset_kind, title, status]
+      properties:
+        source_id:
+          type: string
+          format: uuid
+        asset_kind:
+          type: string
+          example: text
+        title:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [queued]
+          example: queued
+
+    DeleteAccountResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    TurnPhase:
+      type: string
+      enum:
+        - idle
+        - busy
+        - transcribing
+        - generating
+        - synthesizing
+        - done
+        - error
+
+    TurnTimings:
+      type: object
+      properties:
+        sttMs:
+          type: integer
+        augmentMs:
+          type: integer
+        llmFirstTokenMs:
+          type: integer
+        ttsFirstByteMs:
+          type: integer
+        totalMs:
+          type: integer
+
+    VoiceClientMessage:
+      type: object
+      required: [type]
+      description: |
+        Client → server WebSocket message. The `type` field determines which other fields apply:
+
+        | type | Purpose |
+        |------|---------|
+        | `session.start` | Begin a voice session (optional `userId`, `sessionId`) |
+        | `audio.chunk` | Stream PCM16 audio (`data` base64, `format`, `sampleRate`, `channels`, `seq`) |
+        | `turn.end` | Signal end of user utterance; triggers the pipeline |
+        | `session.end` | End the session |
+      properties:
+        type:
+          type: string
+          enum: [session.start, audio.chunk, turn.end, session.end]
+        userId:
+          type: string
+        sessionId:
+          type: string
+        seq:
+          type: integer
+          description: Monotonic chunk sequence number
+        format:
+          type: string
+          example: pcm16
+        sampleRate:
+          type: integer
+          example: 16000
+        channels:
+          type: integer
+          example: 1
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded PCM16 audio (for `audio.chunk`)
+
+    VoiceServerMessage:
+      type: object
+      required: [type]
+      description: |
+        Server → client WebSocket message. The `type` field determines which other fields apply:
+
+        | type | Purpose |
+        |------|---------|
+        | `session.ready` | Session initialized (`sessionId`, `userId`) |
+        | `turn.phase` | Pipeline phase update (`phase`) |
+        | `turn.transcript` | STT result (`text`) |
+        | `turn.reply` | LLM reply text (`text`) |
+        | `audio.out` | TTS audio chunk (`data` base64, `format`, `seq`, optional `sampleRate`/`channels`) |
+        | `turn.done` | Turn complete (`timings`, optional `skipped`) |
+        | `error` | Error (`code`, `message`) |
+      properties:
+        type:
+          type: string
+          enum:
+            - session.ready
+            - turn.phase
+            - turn.transcript
+            - turn.reply
+            - audio.out
+            - turn.done
+            - error
+        sessionId:
+          type: string
+        userId:
+          type: string
+        phase:
+          $ref: "#/components/schemas/TurnPhase"
+        text:
+          type: string
+        seq:
+          type: integer
+        format:
+          type: string
+          example: pcm16
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded audio (for `audio.out`)
+        sampleRate:
+          type: integer
+        channels:
+          type: integer
+        timings:
+          $ref: "#/components/schemas/TurnTimings"
+        skipped:
+          type: boolean
+          description: True when the turn was skipped (e.g. no speech detected)
+        code:
+          type: string
+        message:
+          type: string
