@@ -8,14 +8,16 @@ import (
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	appmiddleware "github.com/kishansagathiya/donna/donna-server-go/internal/middleware"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
@@ -55,9 +57,10 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(chimiddleware.RealIP)
+	r.Use(chimiddleware.Logger)
+	r.Use(appmiddleware.CORS)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -84,6 +87,12 @@ func main() {
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
 	})).Delete("/account", accountHandler.ServeHTTP)
+
+	chatHandler := &chat.Handler{Engine: engine}
+	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
+		RequireAuth: cfg.RequireAuth,
+		Auth:        authCfg,
+	})).Post("/chat", chatHandler.ServeHTTP)
 
 	voiceHandler := &voice.Handler{
 		Config:        cfg,
@@ -115,6 +124,7 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
+	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("account: DELETE /account", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
