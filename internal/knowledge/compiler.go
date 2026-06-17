@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -15,8 +16,9 @@ import (
 var errSourceNotOwned = errors.New("source does not belong to user")
 
 type Compiler struct {
-	KB  *storage.Knowledge
-	LLM *providers.LLM
+	KB    *storage.Knowledge
+	LLM   *providers.LLM
+	Notes *notes.Sync
 }
 
 type compilerOutput struct {
@@ -122,6 +124,9 @@ func (c *Compiler) CompileConversation(ctx context.Context, userID, conversation
 	if err != nil {
 		c.KB.CompleteCompileLog(ctx, logID, "failed", 0, 0, err.Error())
 		return err
+	}
+	if c.Notes != nil {
+		_ = c.Notes.FromVoiceSources(ctx, userID, sources)
 	}
 	if len(sources) == 0 {
 		c.KB.CompleteCompileLog(ctx, logID, "failed", 0, 0, "no conversation turns to compile")

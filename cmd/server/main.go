@@ -19,6 +19,7 @@ import (
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	appmiddleware "github.com/kishansagathiya/donna/donna-server-go/internal/middleware"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
@@ -39,6 +40,7 @@ func main() {
 
 	supa := storage.NewSupabase(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
 	kbStore := &storage.Knowledge{DB: supa, Enabled: cfg.PersistKnowledge}
+	notesStore := &storage.Notes{DB: supa, Enabled: cfg.PersistKnowledge}
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
@@ -46,7 +48,11 @@ func main() {
 
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 
-	compiler := &knowledge.Compiler{KB: kbStore, LLM: llm}
+	noteIndexer := &notes.Indexer{Store: notesStore, LLM: llm}
+	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
+	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue}
+
+	compiler := &knowledge.Compiler{KB: kbStore, LLM: llm, Notes: noteSync}
 	compileQueue := knowledge.NewQueue(kbStore, compiler)
 
 	engine := &pipeline.Engine{
@@ -55,6 +61,7 @@ func main() {
 		LLM:    llm,
 		TTS:    providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey),
 		KB:     kbStore,
+		Notes:  notesStore,
 	}
 
 	r := chi.NewRouter()
@@ -77,11 +84,18 @@ func main() {
 		writeJSON(w, http.StatusOK, knowledge.SupportedFormats())
 	})
 
-	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue}
+	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue, Notes: noteSync}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
+
+	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync}
+	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
+		RequireAuth: cfg.RequireAuth,
+		Auth:        authCfg,
+	})
+	notes.RegisterRoutes(r, authMiddleware, notesHandler)
 
 	accountHandler := &account.Handler{
 		Deleter: &account.Deleter{DB: supa},
@@ -128,6 +142,7 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
+	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("account: DELETE /account", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)

@@ -45,6 +45,8 @@ tags:
     description: Service health
   - name: Knowledge
     description: Knowledge base ingest and formats
+  - name: Notes
+    description: User notes (searchable; web-only edit/browse)
   - name: Account
     description: Account management
   - name: Voice
@@ -165,6 +167,212 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
                 error: knowledge_disabled
+
+  /notes/search:
+    get:
+      tags: [Notes]
+      summary: Search notes
+      description: |
+        Full-text search over notes. Returns snippet summaries only (no full content).
+        Available to web and iOS clients.
+      operationId: searchNotes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Matching note summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NoteSummary"
+        "400":
+          description: Missing query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /notes/recent:
+    get:
+      tags: [Notes]
+      summary: List recent notes
+      description: Web client only. Requires `X-Donna-Client: web` header.
+      operationId: listRecentNotes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Donna-Client
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [web]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Recent note summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NoteSummary"
+        "403":
+          description: Web client header required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /notes:
+    post:
+      tags: [Notes]
+      summary: Create manual note
+      description: Web client only. Requires `X-Donna-Client: web` header.
+      operationId: createNote
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Donna-Client
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNoteRequest"
+      responses:
+        "200":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+
+  /notes/{id}:
+    get:
+      tags: [Notes]
+      summary: Get note
+      description: Web client only. Returns full note content for editing.
+      operationId: getNote
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Donna-Client
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [web]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Full note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "404":
+          description: Note not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Notes]
+      summary: Update note
+      description: Web client only. Edit content, date, and urgency/importance flags.
+      operationId: updateNote
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Donna-Client
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [web]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNoteRequest"
+      responses:
+        "200":
+          description: Updated note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+    delete:
+      tags: [Notes]
+      summary: Delete note
+      description: Web client only.
+      operationId: deleteNote
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Donna-Client
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [web]
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Note deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
 
   /account:
     delete:
@@ -323,6 +531,77 @@ components:
           type: string
         message:
           type: string
+
+    NoteSummary:
+      type: object
+      required: [id, title, preview, note_date, is_important, is_urgent, source_type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        preview:
+          type: string
+        note_date:
+          type: string
+          format: date-time
+        is_important:
+          type: boolean
+        is_urgent:
+          type: boolean
+        source_type:
+          type: string
+          enum: [voice_turn, document, manual]
+
+    Note:
+      allOf:
+        - $ref: "#/components/schemas/NoteSummary"
+        - type: object
+          required: [user_id, content, created_at, updated_at]
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            source_id:
+              type: string
+              format: uuid
+              nullable: true
+            content:
+              type: string
+            user_last_modified:
+              type: string
+              format: date-time
+              nullable: true
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    CreateNoteRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+        note_date:
+          type: string
+          format: date-time
+
+    UpdateNoteRequest:
+      type: object
+      properties:
+        content:
+          type: string
+        note_date:
+          type: string
+          format: date-time
+        is_important:
+          type: boolean
+        is_urgent:
+          type: boolean
 
     TurnPhase:
       type: string

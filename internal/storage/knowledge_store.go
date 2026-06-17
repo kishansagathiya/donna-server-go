@@ -21,6 +21,7 @@ type KbSource struct {
 	ConversationID *string        `json:"conversation_id"`
 	TurnIndex      *int           `json:"turn_index"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
+	CreatedAt      string         `json:"created_at"`
 }
 
 type KbFact struct {
@@ -232,7 +233,7 @@ func (k *Knowledge) UpsertVoiceSource(ctx context.Context, input struct {
 
 func (k *Knowledge) GetSourcesForConversation(ctx context.Context, conversationID string) ([]KbSource, error) {
 	q := url.Values{}
-	q.Set("select", "id,user_id,source_type,content,conversation_id,turn_index")
+	q.Set("select", "id,user_id,source_type,content,conversation_id,turn_index,created_at")
 	q.Set("conversation_id", "eq."+conversationID)
 	q.Set("order", "turn_index.asc")
 
@@ -366,7 +367,7 @@ func (k *Knowledge) InsertAssetSource(ctx context.Context, userID, content strin
 
 func (k *Knowledge) GetSourceByID(ctx context.Context, sourceID string) (KbSource, error) {
 	q := url.Values{}
-	q.Set("select", "id,user_id,source_type,content,conversation_id,turn_index,metadata")
+	q.Set("select", "id,user_id,source_type,content,conversation_id,turn_index,metadata,created_at")
 	q.Set("id", "eq."+sourceID)
 
 	var rows []KbSource

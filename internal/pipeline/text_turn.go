@@ -46,7 +46,7 @@ func (e *Engine) RunTextTurn(
 
 	phase(protocol.TurnPhaseGenerating)
 	augStart := time.Now()
-	augmented := DefaultAugment(ctx, e.KB, message, options.UserID, options.SessionID)
+	augmented := DefaultAugment(ctx, e.KB, e.Notes, message, options.UserID, options.SessionID)
 
 	profileSummary := ""
 	if e.KB != nil && e.KB.Enabled {

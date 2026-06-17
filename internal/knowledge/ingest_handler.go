@@ -9,6 +9,7 @@ import (
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -17,6 +18,7 @@ const maxUploadBytes = 15 * 1024 * 1024
 type IngestHandler struct {
 	KB    *storage.Knowledge
 	Queue *Queue
+	Notes *notes.Sync
 }
 
 func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +130,10 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 
 	if h.Queue != nil {
 		h.Queue.EnqueueAssetCompile(userID, sourceID)
+	}
+
+	if h.Notes != nil {
+		_ = h.Notes.FromSource(r.Context(), userID, sourceID, "document", extracted.Content, time.Now().UTC())
 	}
 
 	h.KB.LogKnowledge("asset ingested", map[string]any{

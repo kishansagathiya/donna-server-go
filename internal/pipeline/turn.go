@@ -53,6 +53,7 @@ type Engine struct {
 	LLM    *providers.LLM
 	TTS    *providers.TTS
 	KB     *storage.Knowledge
+	Notes  *storage.Notes
 }
 
 func (e *Engine) RunVoiceTurn(
@@ -201,7 +202,7 @@ func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessio
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		augmented = DefaultAugment(ctx, e.KB, transcript, userID, sessionID)
+		augmented = DefaultAugment(ctx, e.KB, e.Notes, transcript, userID, sessionID)
 	}()
 	go func() {
 		defer wg.Done()
