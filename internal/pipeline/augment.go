@@ -30,10 +30,27 @@ func fmtQuoteUser(transcript string) string {
 	return `User said: "` + transcript + `"`
 }
 
+// augmentTokenBudget is the soft character cap (~1500 tokens ≈ 6000 chars) for
+// retrieved memory injected into the prompt. Lowest-scoring items are dropped
+// from the tail when the budget is exceeded.
+const augmentTokenBudget = 6000
+
 func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string) TranscriptAugmentation {
 	_ = sessionID
 	base := TranscriptAugmentation{Transcript: transcript}
 
+	// Preferred path: a single hybrid match_memory RPC that blends vector
+	// similarity, FTS, and recency across both facts and notes.
+	if kb != nil && kb.Enabled {
+		hits, err := kb.RetrieveMemory(ctx, userID, transcript, 20)
+		if err == nil {
+			base.Retrieved = applyTokenBudget(hits, augmentTokenBudget)
+			base.Text = FormatAugmentedUserMessage(base)
+			return base
+		}
+	}
+
+	// Graceful degradation: legacy FTS + recency path (no embeddings/RPC).
 	var retrieved []string
 	seen := make(map[string]struct{})
 
@@ -72,4 +89,22 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 
 	base.Text = FormatAugmentedUserMessage(base)
 	return base
+}
+
+// applyTokenBudget trims the retrieved list to fit within charBudget, dropping
+// lowest-scoring items from the tail (hits are already score-descending).
+func applyTokenBudget(hits []storage.MemoryHit, charBudget int) []string {
+	out := make([]string, 0, len(hits))
+	used := 0
+	for _, h := range hits {
+		if h.Text == "" {
+			continue
+		}
+		if used+len(h.Text) > charBudget && len(out) > 0 {
+			break
+		}
+		out = append(out, h.Text)
+		used += len(h.Text) + 3 // account for " | " separator
+	}
+	return out
 }

@@ -16,7 +16,7 @@ Rules:
 - entity_name: the primary person/place/project the fact is about (optional).
 - topic: a short category like family, work, health, travel, preferences (optional).
 - profile_summary: a 2-4 sentence stable overview of who this user is and what matters to them. Update incrementally; do not wipe prior context unless contradicted.
-- supersede: when new information replaces old facts, list the old fact text (substring match) and the replacement fact.
+- supersede: when new information replaces old facts, reference the old fact by its id (old_fact_id, the UUID shown next to each existing fact) and provide the replacement fact. Only fall back to old_fact substring text if you cannot determine the id.
 - Do not duplicate facts already in existing_facts unless you are superseding them.
 - Return valid JSON only, no markdown fences.
 
@@ -27,7 +27,7 @@ Output schema:
     { "fact": "string", "entity_name": "string or null", "topic": "string or null", "source_turn_index": number or null }
   ],
   "supersede": [
-    { "old_fact": "string", "new_fact": "string", "entity_name": "string or null", "topic": "string or null" }
+    { "old_fact_id": "uuid string or null", "old_fact": "string", "new_fact": "string", "entity_name": "string or null", "topic": "string or null" }
   ]
 }`
 

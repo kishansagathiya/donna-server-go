@@ -2,24 +2,6 @@ package knowledge
 
 import "testing"
 
-func TestMergeNameIntoProfile(t *testing.T) {
-	tests := []struct {
-		existing string
-		name     string
-		want     string
-	}{
-		{"", "Kishan", "The user's name is Kishan."},
-		{"Enjoys hiking.", "Kishan", "The user's name is Kishan. Enjoys hiking."},
-		{"The user's name is Kishan. Enjoys hiking.", "Kishan", "The user's name is Kishan. Enjoys hiking."},
-	}
-	for _, tt := range tests {
-		got := mergeNameIntoProfile(tt.existing, tt.name)
-		if got != tt.want {
-			t.Fatalf("mergeNameIntoProfile(%q, %q) = %q, want %q", tt.existing, tt.name, got, tt.want)
-		}
-	}
-}
-
 func TestExtractObviousFactsFromTranscript(t *testing.T) {
 	facts := ExtractObviousFacts([]SourceSlice{{Content: "User: My name is Kishan"}})
 	if len(facts) != 1 {

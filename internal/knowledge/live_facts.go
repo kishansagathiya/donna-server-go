@@ -82,15 +82,12 @@ func PersistLiveFactsFromTranscript(ctx context.Context, kb *storage.Knowledge, 
 		}
 	}
 	if nameToMerge != "" {
-		existingProfile, _ := kb.GetUserProfileSummary(ctx, input.UserID)
-		merged := mergeNameIntoProfile(existingProfile, nameToMerge)
-		if merged != existingProfile {
-			if err := kb.UpsertUserProfileSummary(ctx, input.UserID, merged); err != nil {
-				log.Warn("live facts: failed to update profile", map[string]any{
-					"user":  shortID(input.UserID),
-					"error": err.Error(),
-				})
-			}
+		identityFact := "The user's name is " + nameToMerge + "."
+		if err := kb.AddIdentityFact(ctx, input.UserID, identityFact); err != nil {
+			log.Warn("live facts: failed to record identity fact", map[string]any{
+				"user":  shortID(input.UserID),
+				"error": err.Error(),
+			})
 		}
 	}
 
@@ -98,19 +95,6 @@ func PersistLiveFactsFromTranscript(ctx context.Context, kb *storage.Knowledge, 
 		"user":       shortID(input.UserID),
 		"factsAdded": added,
 	})
-}
-
-func mergeNameIntoProfile(existing, name string) string {
-	nameNote := "The user's name is " + name + "."
-	lowerExisting := strings.ToLower(existing)
-	lowerName := strings.ToLower(name)
-	if strings.Contains(lowerExisting, lowerName) {
-		return existing
-	}
-	if strings.TrimSpace(existing) == "" {
-		return nameNote
-	}
-	return nameNote + " " + strings.TrimSpace(existing)
 }
 
 // PersistLiveFactsAsync runs PersistLiveFactsFromTranscript in a background goroutine.

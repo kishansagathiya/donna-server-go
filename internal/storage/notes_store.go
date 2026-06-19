@@ -47,8 +47,9 @@ type NoteUpdate struct {
 }
 
 type Notes struct {
-	DB      *Supabase
-	Enabled bool
+	DB       *Supabase
+	Enabled  bool
+	Embedder Embedder
 }
 
 func (n *Notes) selectColumns() string {
@@ -83,6 +84,10 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 		body["source_id"] = *opts.SourceID
 	}
 
+	if emb := n.noteEmbedding(ctx, title, content, preview); emb != nil {
+		body["embedding"] = emb
+	}
+
 	var rows []Note
 	if err := n.DB.Insert(ctx, "notes", body, &rows); err != nil {
 		return Note{}, err
@@ -109,6 +114,10 @@ func (n *Notes) UpsertNoteFromSource(ctx context.Context, userID, sourceID, sour
 		"updated_at":  now,
 	}
 
+	if emb := n.noteEmbedding(ctx, title, content, preview); emb != nil {
+		body["embedding"] = emb
+	}
+
 	var rows []struct {
 		ID string `json:"id"`
 	}
@@ -119,6 +128,26 @@ func (n *Notes) UpsertNoteFromSource(ctx context.Context, userID, sourceID, sour
 		return "", fmt.Errorf("failed to upsert note from source")
 	}
 	return rows[0].ID, nil
+}
+
+// noteEmbedding returns an embedding for title + content (preview included for
+// short notes), or nil if the embedder is unavailable or embedding fails.
+func (n *Notes) noteEmbedding(ctx context.Context, title, content, preview string) []float32 {
+	if n.Embedder == nil || !n.Embedder.Enabled() {
+		return nil
+	}
+	text := strings.TrimSpace(title + "\n" + content)
+	if text == "" {
+		text = strings.TrimSpace(preview)
+	}
+	if text == "" {
+		return nil
+	}
+	vec, err := n.Embedder.EmbedOne(ctx, text)
+	if err != nil {
+		return nil
+	}
+	return vec
 }
 
 func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, error) {

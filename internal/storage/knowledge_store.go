@@ -64,6 +64,47 @@ func (k *Knowledge) UpsertUserProfileSummary(ctx context.Context, userID, summar
 	return k.DB.Upsert(ctx, "kb_user_profiles", "user_id", body, &rows)
 }
 
+// AddIdentityFact appends a machine-detected identity fact (e.g. the user's
+// name) to kb_user_profiles.identity_facts, deduped case-insensitively. These
+// are always prepended to the LLM-generated summary at read time so the
+// compiler's profile_summary overwrite can never silently drop them.
+func (k *Knowledge) AddIdentityFact(ctx context.Context, userID, fact string) error {
+	fact = strings.TrimSpace(fact)
+	if fact == "" {
+		return nil
+	}
+
+	q := url.Values{}
+	q.Set("select", "identity_facts")
+	q.Set("user_id", "eq."+userID)
+
+	var rows []struct {
+		IdentityFacts []string `json:"identity_facts"`
+	}
+	if err := k.DB.Get(ctx, "kb_user_profiles", q, &rows); err != nil {
+		return err
+	}
+
+	existing := []string{}
+	if len(rows) > 0 {
+		existing = rows[0].IdentityFacts
+	}
+	for _, f := range existing {
+		if strings.EqualFold(f, fact) {
+			return nil
+		}
+	}
+	updated := append([]string{fact}, existing...)
+
+	patchQ := url.Values{}
+	patchQ.Set("user_id", "eq."+userID)
+	body := map[string]any{
+		"identity_facts": updated,
+		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	}
+	return k.DB.Patch(ctx, "kb_user_profiles", patchQ, body)
+}
+
 func (k *Knowledge) GetActiveFacts(ctx context.Context, userID string) ([]KbFact, error) {
 	q := url.Values{}
 	q.Set("select", "id,user_id,fact,entity_name,topic,source_id,active")
@@ -82,9 +123,27 @@ func (k *Knowledge) InsertFacts(ctx context.Context, userID string, facts []NewF
 	if len(facts) == 0 {
 		return 0, nil
 	}
+
+	embeddings := make([][]float32, len(facts))
+	if k.Embedder != nil && k.Embedder.Enabled() {
+		inputs := make([]string, len(facts))
+		for i, f := range facts {
+			inputs[i] = factEmbeddingInput(f)
+		}
+		vecs, err := k.Embedder.Embed(ctx, inputs)
+		if err != nil {
+			log.Warn("insert facts: embedding failed, writing without vectors", map[string]any{
+				"userId": log.ShortID(userID),
+				"error":  err.Error(),
+			})
+		} else if len(vecs) == len(facts) {
+			embeddings = vecs
+		}
+	}
+
 	rows := make([]map[string]any, 0, len(facts))
-	for _, f := range facts {
-		rows = append(rows, map[string]any{
+	for i, f := range facts {
+		row := map[string]any{
 			"user_id":       userID,
 			"fact":          f.Fact,
 			"entity_name":   f.EntityName,
@@ -92,12 +151,30 @@ func (k *Knowledge) InsertFacts(ctx context.Context, userID string, facts []NewF
 			"source_id":     f.SourceID,
 			"supersedes_id": f.SupersedesID,
 			"active":        true,
-		})
+		}
+		if embeddings[i] != nil {
+			row["embedding"] = embeddings[i]
+		}
+		rows = append(rows, row)
 	}
 	if err := k.DB.Insert(ctx, "kb_facts", rows, nil); err != nil {
 		return 0, err
 	}
 	return len(rows), nil
+}
+
+// factEmbeddingInput builds the text that gets embedded for a fact. Including
+// entity_name and topic improves recall for entity-centric queries.
+func factEmbeddingInput(f NewFactInput) string {
+	parts := make([]string, 0, 3)
+	if f.EntityName != nil && strings.TrimSpace(*f.EntityName) != "" {
+		parts = append(parts, *f.EntityName)
+	}
+	if f.Topic != nil && strings.TrimSpace(*f.Topic) != "" {
+		parts = append(parts, *f.Topic)
+	}
+	parts = append(parts, f.Fact)
+	return strings.Join(parts, " ")
 }
 
 func (k *Knowledge) DeactivateFact(ctx context.Context, factID string) error {
@@ -344,6 +421,17 @@ func (k *Knowledge) CompleteCompileLog(ctx context.Context, logID, status string
 	if err := k.DB.Patch(ctx, "kb_compile_log", q, body); err != nil {
 		log.Warn("failed to update compile log", map[string]any{"error": err.Error()})
 	}
+}
+
+// RecordSupersedeMisses stores dropped supersede attempts on the compile log
+// for debugging. The supersede_misses column is a jsonb array.
+func (k *Knowledge) RecordSupersedeMisses(ctx context.Context, logID string, misses []map[string]any) error {
+	q := url.Values{}
+	q.Set("id", "eq."+logID)
+	body := map[string]any{
+		"supersede_misses": misses,
+	}
+	return k.DB.Patch(ctx, "kb_compile_log", q, body)
 }
 
 func (k *Knowledge) InsertAssetSource(ctx context.Context, userID, content string, metadata map[string]any) (string, error) {

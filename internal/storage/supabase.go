@@ -208,6 +208,35 @@ func (s *Supabase) Count(ctx context.Context, table string, query url.Values) (i
 	return count, nil
 }
 
+// RPC calls a PostgREST-callable function via POST /rest/v1/rpc/<function>
+// and decodes the JSON response into dest.
+func (s *Supabase) RPC(ctx context.Context, function string, body map[string]any, dest any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	u := s.restURL("rpc/"+function, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header = s.headers("")
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("supabase RPC %s %d: %s", function, res.StatusCode, string(raw))
+	}
+
+	return json.NewDecoder(res.Body).Decode(dest)
+}
+
 type storageListObject struct {
 	Name string  `json:"name"`
 	ID   *string `json:"id"`

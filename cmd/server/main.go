@@ -39,8 +39,9 @@ func main() {
 	}
 
 	supa := storage.NewSupabase(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
-	kbStore := &storage.Knowledge{DB: supa, Enabled: cfg.PersistKnowledge}
-	notesStore := &storage.Notes{DB: supa, Enabled: cfg.PersistKnowledge}
+	embeddings := providers.NewEmbeddings(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+	kbStore := &storage.Knowledge{DB: supa, Enabled: cfg.PersistKnowledge, Embedder: embeddings}
+	notesStore := &storage.Notes{DB: supa, Enabled: cfg.PersistKnowledge, Embedder: embeddings}
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)

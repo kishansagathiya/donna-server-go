@@ -24,12 +24,13 @@ type Compiler struct {
 type compilerOutput struct {
 	ProfileSummary *string `json:"profile_summary"`
 	NewFacts       []struct {
-		Fact              string  `json:"fact"`
-		EntityName        *string `json:"entity_name"`
-		Topic             *string `json:"topic"`
-		SourceTurnIndex   *int    `json:"source_turn_index"`
+		Fact            string  `json:"fact"`
+		EntityName      *string `json:"entity_name"`
+		Topic           *string `json:"topic"`
+		SourceTurnIndex *int    `json:"source_turn_index"`
 	} `json:"new_facts"`
 	Supersede []struct {
+		OldFactID  *string `json:"old_fact_id"`
 		OldFact    string  `json:"old_fact"`
 		NewFact    string  `json:"new_fact"`
 		EntityName *string `json:"entity_name"`
@@ -80,7 +81,7 @@ func (c *Compiler) CompileSource(ctx context.Context, userID, sourceID string) e
 	}
 
 	obviousSources := []SourceSlice{{ID: &source.ID, Content: source.Content}}
-	factsAdded, profileUpdated, err := c.applyCompilerOutput(ctx, userID, sourceID, existingFacts, output, nil, obviousSources)
+	factsAdded, profileUpdated, misses, err := c.applyCompilerOutput(ctx, userID, sourceID, existingFacts, output, nil, obviousSources)
 	if err != nil {
 		return err
 	}
@@ -89,6 +90,14 @@ func (c *Compiler) CompileSource(ctx context.Context, userID, sourceID string) e
 		if err := c.KB.MarkSourceCompiled(ctx, sourceID); err != nil {
 			return err
 		}
+	}
+
+	if len(misses) > 0 {
+		c.KB.LogKnowledge("asset compile supersede misses", map[string]any{
+			"userId":   shortID(userID),
+			"sourceId": sourceID,
+			"misses":   misses,
+		})
 	}
 
 	c.KB.LogKnowledge("asset compiled", map[string]any{
@@ -168,10 +177,16 @@ func (c *Compiler) CompileConversation(ctx context.Context, userID, conversation
 		id := s.ID
 		obviousSources = append(obviousSources, SourceSlice{ID: &id, Content: s.Content, TurnIndex: s.TurnIndex})
 	}
-	factsAdded, _, err := c.applyCompilerOutput(ctx, userID, "", existingFacts, output, sourceByTurn, obviousSources)
+	factsAdded, _, misses, err := c.applyCompilerOutput(ctx, userID, "", existingFacts, output, sourceByTurn, obviousSources)
 	if err != nil {
 		c.KB.CompleteCompileLog(ctx, logID, "failed", 0, 0, err.Error())
 		return err
+	}
+
+	if len(misses) > 0 {
+		if logErr := c.KB.RecordSupersedeMisses(ctx, logID, misses); logErr != nil {
+			log.Warn("failed to record supersede misses", map[string]any{"error": logErr.Error()})
+		}
 	}
 
 	c.KB.CompleteCompileLog(ctx, logID, "completed", len(sources), factsAdded, "")
@@ -213,27 +228,54 @@ func (c *Compiler) applyCompilerOutput(
 	output compilerOutput,
 	sourceByTurn map[int]string,
 	obviousSources []SourceSlice,
-) (factsAdded int, profileUpdated bool, err error) {
+) (factsAdded int, profileUpdated bool, misses []map[string]any, err error) {
 	if output.ProfileSummary != nil && strings.TrimSpace(*output.ProfileSummary) != "" {
 		if err := c.KB.UpsertUserProfileSummary(ctx, userID, strings.TrimSpace(*output.ProfileSummary)); err != nil {
-			return 0, false, err
+			return 0, false, nil, err
 		}
 		profileUpdated = true
 	}
 
+	byID := make(map[string]*storage.KbFact, len(existingFacts))
+	for i := range existingFacts {
+		byID[existingFacts[i].ID] = &existingFacts[i]
+	}
+
 	for _, item := range output.Supersede {
 		var match *storage.KbFact
-		for i := range existingFacts {
-			if strings.Contains(strings.ToLower(existingFacts[i].Fact), strings.ToLower(item.OldFact)) {
-				match = &existingFacts[i]
-				break
+		matchMethod := ""
+
+		if item.OldFactID != nil && strings.TrimSpace(*item.OldFactID) != "" {
+			if m, ok := byID[strings.TrimSpace(*item.OldFactID)]; ok {
+				match = m
+				matchMethod = "id"
 			}
 		}
 		if match == nil {
+			for i := range existingFacts {
+				if strings.Contains(strings.ToLower(existingFacts[i].Fact), strings.ToLower(item.OldFact)) {
+					match = &existingFacts[i]
+					matchMethod = "substring"
+					break
+				}
+			}
+		}
+		if match == nil {
+			misses = append(misses, map[string]any{
+				"old_fact_id": item.OldFactID,
+				"old_fact":    item.OldFact,
+				"new_fact":    item.NewFact,
+				"reason":      "no matching existing fact",
+			})
+			log.Warn("supersede dropped — no match", map[string]any{
+				"userId":   shortID(userID),
+				"old_fact": item.OldFact,
+				"new_fact": item.NewFact,
+			})
 			continue
 		}
 		if err := c.KB.DeactivateFact(ctx, match.ID); err != nil {
-			return factsAdded, profileUpdated, err
+			return factsAdded, profileUpdated, misses, err
 		}
 		entity := item.EntityName
 		if entity == nil {
@@ -251,9 +293,10 @@ func (c *Compiler) applyCompilerOutput(
 			SourceID:     optionalString(defaultSourceID),
 		}})
 		if err != nil {
-			return factsAdded, profileUpdated, err
+			return factsAdded, profileUpdated, misses, err
 		}
 		factsAdded += n
+		_ = matchMethod
 	}
 
 	llmFacts := make([]storage.NewFactInput, 0)
@@ -293,10 +336,10 @@ func (c *Compiler) applyCompilerOutput(
 
 	n, err := c.KB.InsertFacts(ctx, userID, deduped)
 	if err != nil {
-		return factsAdded, profileUpdated, err
+		return factsAdded, profileUpdated, misses, err
 	}
 	factsAdded += n
-	return factsAdded, profileUpdated, nil
+	return factsAdded, profileUpdated, misses, nil
 }
 
 func parseCompilerOutput(raw string) compilerOutput {

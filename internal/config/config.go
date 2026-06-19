@@ -26,6 +26,7 @@ type Config struct {
 	LLMModel               string
 	LLMMaxTokens           int
 	STTModel               string
+	EmbeddingModel         string
 	SystemPrompt           string
 	MaxHistoryMessages     int
 }
@@ -79,6 +80,11 @@ func Load() (*Config, error) {
 		sttModel = "mistralai/voxtral-mini-transcribe"
 	}
 
+	embeddingModel := strings.TrimSpace(os.Getenv("DONNA_EMBEDDING_MODEL"))
+	if embeddingModel == "" {
+		embeddingModel = "text-embedding-3-small"
+	}
+
 	systemPrompt := os.Getenv("DONNA_SYSTEM_PROMPT")
 	if systemPrompt == "" {
 		systemPrompt = "You are Donna, a sharp and thoughtful voice companion. Give the best answer you can — accurate, specific, and genuinely useful. For voice, keep replies to 1–2 short sentences unless the user asks you to go deeper. Be warm and direct, not robotic. If you're unsure or the question needs up-to-date information you don't have, say so plainly instead of guessing. Use what you know about this user when it's relevant; don't force personal details into every reply. Never ask the user to repeat themselves."
@@ -100,6 +106,7 @@ func Load() (*Config, error) {
 		LLMModel:               llmModel,
 		LLMMaxTokens:           llmMaxTokens,
 		STTModel:               sttModel,
+		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,
 		MaxHistoryMessages:     20,
 	}, nil

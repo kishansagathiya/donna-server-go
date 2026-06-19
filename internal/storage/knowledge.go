@@ -11,8 +11,17 @@ import (
 )
 
 type Knowledge struct {
-	DB      *Supabase
-	Enabled bool
+	DB       *Supabase
+	Enabled  bool
+	Embedder Embedder
+}
+
+// Embedder generates vector embeddings. Implemented by providers.Embeddings;
+// kept as an interface to avoid coupling storage to the providers package.
+type Embedder interface {
+	Embed(ctx context.Context, inputs []string) ([][]float32, error)
+	EmbedOne(ctx context.Context, input string) ([]float32, error)
+	Enabled() bool
 }
 
 type factRow struct {
@@ -96,9 +105,9 @@ func (k *Knowledge) GetUserProfileSummary(ctx context.Context, userID string) (s
 		return "", nil
 	}
 	if len(rows) == 0 || rows[0].Summary == nil {
-		return "", nil
+		return k.appendIdentityFacts(ctx, userID, ""), nil
 	}
-	return strings.TrimSpace(*rows[0].Summary), nil
+	return k.appendIdentityFacts(ctx, userID, strings.TrimSpace(*rows[0].Summary)), nil
 }
 
 func (k *Knowledge) fetchRecentFacts(ctx context.Context, userID string, limit int) ([]factRow, error) {
