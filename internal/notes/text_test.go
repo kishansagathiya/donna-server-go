@@ -19,6 +19,30 @@ func TestExtractVoiceUserContent(t *testing.T) {
 	}
 }
 
+func TestExtractPreview(t *testing.T) {
+	got := ExtractPreview("Title line\nSecond line here")
+	if got != "Second line here" {
+		t.Fatalf("ExtractPreview = %q", got)
+	}
+}
+
+func TestExtractPreview_truncatesLongPreview(t *testing.T) {
+	long := stringsRepeat("word ", 30)
+	got := ExtractPreview("Title\n" + long)
+	if len(got) != 83 { // 80 + "..."
+		t.Fatalf("ExtractPreview len = %d, want 83", len(got))
+	}
+	if got[len(got)-3:] != "..." {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
+	}
+}
+
+func TestExtractTitle_emptyContent(t *testing.T) {
+	if got := ExtractTitle("   \n  "); got != "Untitled Note" {
+		t.Fatalf("ExtractTitle empty = %q", got)
+	}
+}
+
 func stringsRepeat(s string, n int) string {
 	out := ""
 	for i := 0; i < n; i++ {
