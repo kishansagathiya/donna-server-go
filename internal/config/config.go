@@ -43,10 +43,17 @@ func Load() (*Config, error) {
 	supabaseServiceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 	port := 8787
+	// Railway/Heroku inject PORT; DONNA_PORT overrides for local dev.
 	if p := os.Getenv("DONNA_PORT"); p != "" {
 		n, err := strconv.Atoi(p)
 		if err != nil {
 			return nil, fmt.Errorf("invalid DONNA_PORT: %w", err)
+		}
+		port = n
+	} else if p := os.Getenv("PORT"); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PORT: %w", err)
 		}
 		port = n
 	}
