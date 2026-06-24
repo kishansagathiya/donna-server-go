@@ -126,6 +126,9 @@ func main() {
 
 	log.Print(fmt.Sprintf("listening on http://%s", addr), nil)
 	log.Print(fmt.Sprintf("health: http://127.0.0.1:%d/health", cfg.Port), nil)
+	if os.Getenv("PORT") != "" {
+		log.Print(fmt.Sprintf("using PORT=%s for HTTP listener", os.Getenv("PORT")), nil)
+	}
 	log.Print(fmt.Sprintf("api docs: http://127.0.0.1:%d/docs", cfg.Port), nil)
 	if cfg.RequireAuth {
 		log.Print("voice auth: required (Supabase JWT)", nil)

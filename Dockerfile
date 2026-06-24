@@ -10,5 +10,6 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/server .
-EXPOSE 8787
+# Railway routes to the PORT env var at runtime (typically 8080).
+EXPOSE 8080
 CMD ["./server"]
