@@ -10,9 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
+	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
@@ -43,6 +43,7 @@ func main() {
 	kbStore := &storage.Knowledge{DB: supa, Enabled: cfg.PersistKnowledge, Embedder: embeddings}
 	notesStore := &storage.Notes{DB: supa, Enabled: cfg.PersistKnowledge, Embedder: embeddings}
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
+	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.LLMMaxTokens)
@@ -57,12 +58,13 @@ func main() {
 	compileQueue := knowledge.NewQueue(kbStore, compiler)
 
 	engine := &pipeline.Engine{
-		Config: cfg,
-		STT:    stt,
-		LLM:    llm,
-		TTS:    providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey),
-		KB:     kbStore,
-		Notes:  notesStore,
+		Config:      cfg,
+		STT:         stt,
+		LLM:         llm,
+		TTS:         providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey),
+		KB:          kbStore,
+		Notes:       notesStore,
+		Preferences: preferencesStore,
 	}
 
 	r := chi.NewRouter()
@@ -99,12 +101,18 @@ func main() {
 	notes.RegisterRoutes(r, authMiddleware, notesHandler)
 
 	accountHandler := &account.Handler{
-		Deleter: &account.Deleter{DB: supa},
+		Deleter:      &account.Deleter{DB: supa},
+		Preferences:  preferencesStore,
+		Models:       cfg.LLMModels,
+		DefaultModel: cfg.LLMModel,
 	}
-	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
+	accountRoutes := r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
-	})).Delete("/account", accountHandler.ServeHTTP)
+	}))
+	accountRoutes.Get("/account", accountHandler.ServeHTTP)
+	accountRoutes.Patch("/account", accountHandler.ServeHTTP)
+	accountRoutes.Delete("/account", accountHandler.ServeHTTP)
 
 	chatHandler := &chat.Handler{Engine: engine}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
@@ -148,7 +156,7 @@ func main() {
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
 	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
-	log.Print("account: DELETE /account", nil)
+	log.Print("account: GET/PATCH/DELETE /account", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)

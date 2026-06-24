@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/wav"
 )
@@ -48,12 +48,13 @@ type TurnOptions struct {
 }
 
 type Engine struct {
-	Config *config.Config
-	STT    *providers.STT
-	LLM    *providers.LLM
-	TTS    *providers.TTS
-	KB     *storage.Knowledge
-	Notes  *storage.Notes
+	Config      *config.Config
+	STT         *providers.STT
+	LLM         *providers.LLM
+	TTS         *providers.TTS
+	KB          *storage.Knowledge
+	Notes       *storage.Notes
+	Preferences *storage.Preferences
 }
 
 func (e *Engine) RunVoiceTurn(
@@ -132,7 +133,7 @@ func (e *Engine) RunVoiceTurn(
 	replyText := ""
 	firstToken := true
 
-	err = e.LLM.StreamCompletion(ctx, messages, func(chunk string) error {
+	err = e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false
@@ -192,11 +193,27 @@ func (e *Engine) RunVoiceTurn(
 	}, nil
 }
 
+func (e *Engine) llmForUser(ctx context.Context, userID string) *providers.LLM {
+	if e.Preferences == nil || userID == "" {
+		return e.LLM
+	}
+	model, err := e.Preferences.GetLLMModel(ctx, userID)
+	if err != nil || model == "" {
+		return e.LLM
+	}
+	for _, allowed := range e.Config.LLMModels {
+		if model == allowed {
+			return e.LLM.WithModel(model)
+		}
+	}
+	return e.LLM
+}
+
 func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessionID string) (TranscriptAugmentation, string) {
 	var (
-		augmented       TranscriptAugmentation
-		profileSummary  string
-		wg              sync.WaitGroup
+		augmented      TranscriptAugmentation
+		profileSummary string
+		wg             sync.WaitGroup
 	)
 
 	wg.Add(2)

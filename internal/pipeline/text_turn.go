@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 )
 
 type TextTurnCallbacks struct {
@@ -65,7 +65,7 @@ func (e *Engine) RunTextTurn(
 	replyText := ""
 	firstToken := true
 
-	err := e.LLM.StreamCompletion(ctx, messages, func(chunk string) error {
+	err := e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false

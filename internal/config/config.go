@@ -24,6 +24,7 @@ type Config struct {
 	CartesiaAPIKey         string
 	ElevenLabsAPIKey       string
 	LLMModel               string
+	LLMModels              []string
 	LLMMaxTokens           int
 	STTModel               string
 	EmbeddingModel         string
@@ -72,6 +73,10 @@ func Load() (*Config, error) {
 	if llmModel == "" {
 		return nil, fmt.Errorf("missing required env var: DONNA_LLM_MODEL")
 	}
+	llmModels := parseModelList(os.Getenv("DONNA_LLM_MODELS"))
+	if !containsString(llmModels, llmModel) {
+		llmModels = append([]string{llmModel}, llmModels...)
+	}
 
 	llmMaxTokens := 150
 	if v := os.Getenv("DONNA_LLM_MAX_TOKENS"); v != "" {
@@ -111,12 +116,33 @@ func Load() (*Config, error) {
 		CartesiaAPIKey:         os.Getenv("CARTESIA_API_KEY"),
 		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
 		LLMModel:               llmModel,
+		LLMModels:              llmModels,
 		LLMMaxTokens:           llmMaxTokens,
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,
 		MaxHistoryMessages:     20,
 	}, nil
+}
+
+func parseModelList(raw string) []string {
+	var models []string
+	for _, value := range strings.Split(raw, ",") {
+		model := strings.TrimSpace(value)
+		if model != "" && !containsString(models, model) {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func loadEnv() {

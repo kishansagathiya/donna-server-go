@@ -35,6 +35,15 @@ func NewLLM(apiKey, model string, maxTokens int) *LLM {
 	}
 }
 
+func (l *LLM) WithModel(model string) *LLM {
+	if model == "" || model == l.Model {
+		return l
+	}
+	copy := *l
+	copy.Model = model
+	return &copy
+}
+
 func (l *LLM) headers() map[string]string {
 	return map[string]string{
 		"Authorization": "Bearer " + l.APIKey,
