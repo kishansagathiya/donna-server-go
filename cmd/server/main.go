@@ -46,7 +46,7 @@ func main() {
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
-	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.LLMMaxTokens)
+	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel)
 
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 

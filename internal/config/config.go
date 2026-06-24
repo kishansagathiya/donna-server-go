@@ -25,7 +25,6 @@ type Config struct {
 	ElevenLabsAPIKey       string
 	LLMModel               string
 	LLMModels              []string
-	LLMMaxTokens           int
 	STTModel               string
 	EmbeddingModel         string
 	SystemPrompt           string
@@ -78,15 +77,6 @@ func Load() (*Config, error) {
 		llmModels = append([]string{llmModel}, llmModels...)
 	}
 
-	llmMaxTokens := 150
-	if v := os.Getenv("DONNA_LLM_MAX_TOKENS"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid DONNA_LLM_MAX_TOKENS: %w", err)
-		}
-		llmMaxTokens = n
-	}
-
 	sttModel := os.Getenv("DONNA_STT_MODEL")
 	if sttModel == "" {
 		sttModel = "mistralai/voxtral-mini-transcribe"
@@ -117,7 +107,6 @@ func Load() (*Config, error) {
 		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
 		LLMModel:               llmModel,
 		LLMModels:              llmModels,
-		LLMMaxTokens:           llmMaxTokens,
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,

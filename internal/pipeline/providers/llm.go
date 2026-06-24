@@ -20,18 +20,16 @@ type ChatMessage struct {
 }
 
 type LLM struct {
-	APIKey    string
-	Model     string
-	MaxTokens int
-	Client    *http.Client
+	APIKey string
+	Model  string
+	Client *http.Client
 }
 
-func NewLLM(apiKey, model string, maxTokens int) *LLM {
+func NewLLM(apiKey, model string) *LLM {
 	return &LLM{
-		APIKey:    apiKey,
-		Model:     model,
-		MaxTokens: maxTokens,
-		Client:    &http.Client{Timeout: 120 * time.Second},
+		APIKey: apiKey,
+		Model:  model,
+		Client: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -59,20 +57,17 @@ func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage st
 	return messages
 }
 
-func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, capOutput bool) ([]byte, error) {
+func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool) ([]byte, error) {
 	payload := map[string]any{
 		"model":    l.Model,
 		"messages": messages,
 		"stream":   stream,
 	}
-	if capOutput && l.MaxTokens > 0 {
-		payload["max_tokens"] = l.MaxTokens
-	}
 	return json.Marshal(payload)
 }
 
 func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onChunk func(string) error) error {
-	body, err := l.chatRequestBody(messages, true, true)
+	body, err := l.chatRequestBody(messages, true)
 	if err != nil {
 		return err
 	}
@@ -132,7 +127,7 @@ func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onCh
 }
 
 func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
-	body, err := l.chatRequestBody(messages, false, false)
+	body, err := l.chatRequestBody(messages, false)
 	if err != nil {
 		return "", err
 	}
