@@ -32,7 +32,17 @@ type KbFact struct {
 	Topic      *string `json:"topic"`
 	SourceID   *string `json:"source_id"`
 	Active     bool    `json:"active"`
+	CreatedAt  string  `json:"created_at,omitempty"`
 }
+
+type UserProfile struct {
+	UserID        string   `json:"user_id"`
+	Summary       string   `json:"summary"`
+	IdentityFacts []string `json:"identity_facts"`
+	UpdatedAt     string   `json:"updated_at,omitempty"`
+}
+
+const kbFactSelect = "id,user_id,fact,entity_name,topic,source_id,active,created_at"
 
 type ConversationTurn struct {
 	TurnIndex            int    `json:"turn_index"`
@@ -107,7 +117,7 @@ func (k *Knowledge) AddIdentityFact(ctx context.Context, userID, fact string) er
 
 func (k *Knowledge) GetActiveFacts(ctx context.Context, userID string) ([]KbFact, error) {
 	q := url.Values{}
-	q.Set("select", "id,user_id,fact,entity_name,topic,source_id,active")
+	q.Set("select", kbFactSelect)
 	q.Set("user_id", "eq."+userID)
 	q.Set("active", "eq.true")
 	q.Set("order", "created_at.asc")
@@ -119,7 +129,140 @@ func (k *Knowledge) GetActiveFacts(ctx context.Context, userID string) ([]KbFact
 	return rows, nil
 }
 
+func (k *Knowledge) GetUserProfileRaw(ctx context.Context, userID string) (UserProfile, error) {
+	if !k.Enabled {
+		return UserProfile{UserID: userID, IdentityFacts: []string{}}, nil
+	}
+
+	q := url.Values{}
+	q.Set("select", "user_id,summary,identity_facts,updated_at")
+	q.Set("user_id", "eq."+userID)
+
+	var rows []UserProfile
+	if err := k.DB.Get(ctx, "kb_user_profiles", q, &rows); err != nil {
+		return UserProfile{}, err
+	}
+	if len(rows) == 0 {
+		return UserProfile{UserID: userID, IdentityFacts: []string{}}, nil
+	}
+	if rows[0].IdentityFacts == nil {
+		rows[0].IdentityFacts = []string{}
+	}
+	return rows[0], nil
+}
+
+func (k *Knowledge) UpdateUserProfile(ctx context.Context, userID string, summary *string, identityFacts *[]string) (UserProfile, error) {
+	if !k.Enabled {
+		return UserProfile{}, fmt.Errorf("knowledge disabled")
+	}
+
+	body := map[string]any{
+		"user_id":    userID,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if summary != nil {
+		body["summary"] = strings.TrimSpace(*summary)
+	}
+	if identityFacts != nil {
+		body["identity_facts"] = *identityFacts
+	}
+
+	var rows []UserProfile
+	if err := k.DB.Upsert(ctx, "kb_user_profiles", "user_id", body, &rows); err != nil {
+		return UserProfile{}, err
+	}
+	if len(rows) == 0 {
+		return k.GetUserProfileRaw(ctx, userID)
+	}
+	if rows[0].IdentityFacts == nil {
+		rows[0].IdentityFacts = []string{}
+	}
+	return rows[0], nil
+}
+
+func (k *Knowledge) GetFactByID(ctx context.Context, userID, factID string) (KbFact, error) {
+	q := url.Values{}
+	q.Set("select", kbFactSelect)
+	q.Set("id", "eq."+factID)
+	q.Set("user_id", "eq."+userID)
+	q.Set("active", "eq.true")
+
+	var rows []KbFact
+	if err := k.DB.Get(ctx, "kb_facts", q, &rows); err != nil {
+		return KbFact{}, err
+	}
+	if len(rows) == 0 {
+		return KbFact{}, fmt.Errorf("fact not found")
+	}
+	return rows[0], nil
+}
+
+func (k *Knowledge) ListActiveFacts(ctx context.Context, userID string, query string, limit, offset int) ([]KbFact, error) {
+	q := url.Values{}
+	q.Set("select", kbFactSelect)
+	q.Set("user_id", "eq."+userID)
+	q.Set("active", "eq.true")
+	q.Set("order", "created_at.desc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	if offset > 0 {
+		q.Set("offset", fmt.Sprintf("%d", offset))
+	}
+
+	trimmed := strings.TrimSpace(query)
+	if trimmed != "" {
+		q.Set("search_vector", "fts.english.websearch."+trimmed)
+	}
+
+	var rows []KbFact
+	if err := k.DB.Get(ctx, "kb_facts", q, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (k *Knowledge) InsertFactReturning(ctx context.Context, userID string, input NewFactInput) (KbFact, error) {
+	var rows []KbFact
+	if _, err := k.insertFacts(ctx, userID, []NewFactInput{input}, &rows); err != nil {
+		return KbFact{}, err
+	}
+	if len(rows) == 0 {
+		return KbFact{}, fmt.Errorf("failed to insert fact")
+	}
+	return rows[0], nil
+}
+
+func (k *Knowledge) SupersedeFact(ctx context.Context, userID, factID string, input NewFactInput) (KbFact, error) {
+	existing, err := k.GetFactByID(ctx, userID, factID)
+	if err != nil {
+		return KbFact{}, err
+	}
+	if err := k.DeactivateFact(ctx, existing.ID); err != nil {
+		return KbFact{}, err
+	}
+
+	supersedesID := existing.ID
+	input.SupersedesID = &supersedesID
+	if input.EntityName == nil {
+		input.EntityName = existing.EntityName
+	}
+	if input.Topic == nil {
+		input.Topic = existing.Topic
+	}
+	return k.InsertFactReturning(ctx, userID, input)
+}
+
+func (k *Knowledge) DeactivateUserFact(ctx context.Context, userID, factID string) error {
+	if _, err := k.GetFactByID(ctx, userID, factID); err != nil {
+		return err
+	}
+	return k.DeactivateFact(ctx, factID)
+}
+
 func (k *Knowledge) InsertFacts(ctx context.Context, userID string, facts []NewFactInput) (int, error) {
+	return k.insertFacts(ctx, userID, facts, nil)
+}
+
+func (k *Knowledge) insertFacts(ctx context.Context, userID string, facts []NewFactInput, dest *[]KbFact) (int, error) {
 	if len(facts) == 0 {
 		return 0, nil
 	}
@@ -157,7 +300,7 @@ func (k *Knowledge) InsertFacts(ctx context.Context, userID string, facts []NewF
 		}
 		rows = append(rows, row)
 	}
-	if err := k.DB.Insert(ctx, "kb_facts", rows, nil); err != nil {
+	if err := k.DB.Insert(ctx, "kb_facts", rows, dest); err != nil {
 		return 0, err
 	}
 	return len(rows), nil

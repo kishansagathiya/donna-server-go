@@ -17,6 +17,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	appmiddleware "github.com/kishansagathiya/donna/donna-server-go/internal/middleware"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
@@ -100,6 +101,9 @@ func main() {
 	})
 	notes.RegisterRoutes(r, authMiddleware, notesHandler)
 
+	memoryHandler := &memory.Handler{KB: kbStore}
+	memory.RegisterRoutes(r, authMiddleware, memoryHandler)
+
 	accountHandler := &account.Handler{
 		Deleter:      &account.Deleter{DB: supa},
 		Preferences:  preferencesStore,
@@ -155,6 +159,7 @@ func main() {
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
 	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
+	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("account: GET/PATCH/DELETE /account", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
