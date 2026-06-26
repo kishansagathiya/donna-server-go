@@ -2,15 +2,19 @@ package account
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 type Handler struct {
 	Deleter      *Deleter
+	Exporter     *Exporter
 	Preferences  *storage.Preferences
 	Models       []string
 	DefaultModel string
@@ -98,4 +102,50 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Exporter == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":   "export_unavailable",
+			"message": "data export unavailable",
+		})
+		return
+	}
+
+	if err := h.Exporter.PreCheck(userID); err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case strings.Contains(err.Error(), "rate limited"):
+			status = http.StatusTooManyRequests
+		case strings.Contains(err.Error(), "unavailable"):
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]string{
+			"error":   "export_failed",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	filename := fmt.Sprintf("donna-export-%s.zip", time.Now().UTC().Format("2006-01-02"))
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+	if err := h.Exporter.ExportUser(r.Context(), userID, w); err != nil {
+		log.Print("export failed", map[string]any{
+			"userId": log.ShortID(userID),
+			"error":  err.Error(),
+		})
+	}
 }

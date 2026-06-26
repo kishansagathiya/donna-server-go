@@ -393,6 +393,30 @@ func (s *Supabase) DeleteAuthUser(ctx context.Context, userID string) error {
 	return nil
 }
 
+func (s *Supabase) DownloadStorage(ctx context.Context, bucket, path string) ([]byte, error) {
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.URL, bucket, objectPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("storage download %s %d: %s", path, res.StatusCode, string(raw))
+	}
+	return io.ReadAll(res.Body)
+}
+
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
 	objectPath := url.PathEscape(path)
 	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")

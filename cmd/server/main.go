@@ -105,7 +105,8 @@ func main() {
 	memory.RegisterRoutes(r, authMiddleware, memoryHandler)
 
 	accountHandler := &account.Handler{
-		Deleter:      &account.Deleter{DB: supa},
+		Deleter: &account.Deleter{DB: supa},
+		Exporter: &account.Exporter{DB: supa},
 		Preferences:  preferencesStore,
 		Models:       cfg.LLMModels,
 		DefaultModel: cfg.LLMModel,
@@ -117,8 +118,9 @@ func main() {
 	accountRoutes.Get("/account", accountHandler.ServeHTTP)
 	accountRoutes.Patch("/account", accountHandler.ServeHTTP)
 	accountRoutes.Delete("/account", accountHandler.ServeHTTP)
+	accountRoutes.Get("/account/export", accountHandler.Export)
 
-	chatHandler := &chat.Handler{Engine: engine}
+	chatHandler := &chat.Handler{Engine: engine, Conversations: convStore}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
@@ -161,7 +163,7 @@ func main() {
 	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
-	log.Print("account: GET/PATCH/DELETE /account", nil)
+	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)

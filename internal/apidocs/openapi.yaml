@@ -375,6 +375,58 @@ paths:
                     example: deleted
 
   /account:
+    get:
+      tags: [Account]
+      summary: Get account preferences
+      description: Returns the authenticated user's LLM model preference and available models.
+      operationId: getAccount
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Account preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  llm_model:
+                    type: string
+                  available_models:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Account]
+      summary: Update account preferences
+      operationId: updateAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [llm_model]
+              properties:
+                llm_model:
+                  type: string
+      responses:
+        "200":
+          description: Preferences updated
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       tags: [Account]
       summary: Delete account
@@ -408,6 +460,46 @@ paths:
               example:
                 error: delete_failed
                 message: account deletion unavailable
+
+  /account/export:
+    get:
+      tags: [Account]
+      summary: Download account data export
+      description: |
+        Returns a ZIP archive of the authenticated user's data: voice and text
+        conversations (transcripts and audio), notes, memory facts, ingested
+        knowledge sources and files, profile, preferences, and compile log.
+
+        Rate limited to one export per 15 minutes per user.
+      operationId: exportAccount
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ZIP data export
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Export rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Export unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /voice:
     get:

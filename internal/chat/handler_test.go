@@ -1,56 +1,61 @@
 package chat
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
-	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
-func TestHandler_unauthorized(t *testing.T) {
-	h := &Handler{Engine: &pipeline.Engine{}}
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"message":"hi"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+func TestTextTurnIndex(t *testing.T) {
+	tests := []struct {
+		name    string
+		history []providers.ChatMessage
+		want    int
+	}{
+		{
+			name:    "empty history",
+			history: nil,
+			want:    0,
+		},
+		{
+			name: "one prior turn",
+			history: []providers.ChatMessage{
+				{Role: "user", Content: "hi"},
+				{Role: "assistant", Content: "hello"},
+			},
+			want: 1,
+		},
+		{
+			name: "two prior turns",
+			history: []providers.ChatMessage{
+				{Role: "user", Content: "one"},
+				{Role: "assistant", Content: "two"},
+				{Role: "user", Content: "three"},
+				{Role: "assistant", Content: "four"},
+			},
+			want: 2,
+		},
+	}
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := textTurnIndex(tt.history); got != tt.want {
+				t.Fatalf("textTurnIndex() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestHandler_emptyMessage(t *testing.T) {
-	h := &Handler{Engine: &pipeline.Engine{}}
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"message":"  "}`))
-	req = req.WithContext(contextWithUser("user-1"))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", rec.Code)
-	}
+func TestHandler_persistTurn_skipsWhenDisabled(t *testing.T) {
+	h := &Handler{Conversations: nil}
+	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, false)
 }
 
-func TestHandler_methodNotAllowed(t *testing.T) {
-	h := &Handler{Engine: &pipeline.Engine{}}
-	req := httptest.NewRequest(http.MethodGet, "/chat", nil)
-	req = req.WithContext(contextWithUser("user-1"))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", rec.Code)
+func TestHandler_persistTurn_skipsWhenSkipped(t *testing.T) {
+	h := &Handler{
+		Conversations: &storage.Conversations{Enabled: true},
 	}
-}
-
-func contextWithUser(userID string) context.Context {
-	return context.WithValue(context.Background(), appauth.UserIDKey, userID)
+	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, true)
 }

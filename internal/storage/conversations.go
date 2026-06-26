@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
@@ -33,9 +34,10 @@ func (c *Conversations) Create(ctx context.Context, userID, voiceSessionID strin
 	var rows []struct {
 		ID string `json:"id"`
 	}
-	body := map[string]string{
+	body := map[string]any{
 		"user_id":          userID,
 		"voice_session_id": voiceSessionID,
+		"channel":          "voice",
 	}
 	if err := c.DB.Insert(ctx, "conversations", body, &rows); err != nil {
 		return "", err
@@ -48,6 +50,56 @@ func (c *Conversations) Create(ctx context.Context, userID, voiceSessionID strin
 		"conversationId": rows[0].ID,
 		"voiceSessionId": voiceSessionID,
 		"userId":         log.ShortID(userID),
+	})
+	return rows[0].ID, nil
+}
+
+func (c *Conversations) GetOrCreateText(ctx context.Context, userID, clientSessionID string) (string, error) {
+	if !c.Enabled {
+		return "", fmt.Errorf("conversation persistence disabled")
+	}
+	clientSessionID = strings.TrimSpace(clientSessionID)
+	if clientSessionID == "" {
+		return "", fmt.Errorf("missing client session id")
+	}
+
+	q := url.Values{}
+	q.Set("select", "id")
+	q.Set("user_id", "eq."+userID)
+	q.Set("channel", "eq.text")
+	q.Set("client_session_id", "eq."+clientSessionID)
+	q.Set("ended_at", "is.null")
+	q.Set("limit", "1")
+
+	var existing []struct {
+		ID string `json:"id"`
+	}
+	if err := c.DB.Get(ctx, "conversations", q, &existing); err != nil {
+		return "", err
+	}
+	if len(existing) > 0 {
+		return existing[0].ID, nil
+	}
+
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	body := map[string]any{
+		"user_id":            userID,
+		"channel":            "text",
+		"client_session_id":  clientSessionID,
+	}
+	if err := c.DB.Insert(ctx, "conversations", body, &rows); err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("failed to create text conversation")
+	}
+
+	log.Print("text conversation created", map[string]any{
+		"conversationId":  rows[0].ID,
+		"clientSessionId": clientSessionID,
+		"userId":          log.ShortID(userID),
 	})
 	return rows[0].ID, nil
 }

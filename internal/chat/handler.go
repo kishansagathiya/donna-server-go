@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,13 +11,16 @@ import (
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 type Handler struct {
-	Engine *pipeline.Engine
+	Engine        *pipeline.Engine
+	Conversations *storage.Conversations
 }
 
 type chatRequest struct {
@@ -101,6 +105,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.persistFacts(userID, sessionID, result.Transcript)
+	h.persistTurn(userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped)
 
 	writeJSON(w, http.StatusOK, chatResponse{
 		Reply:     result.ReplyText,
@@ -159,6 +164,7 @@ func (h *Handler) streamReply(
 	}
 
 	h.persistFacts(userID, sessionID, result.Transcript)
+	h.persistTurn(userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped)
 
 	if mode.IsListen() {
 		writeSSE("done", mustJSON(chatResponse{
@@ -174,6 +180,49 @@ func (h *Handler) streamReply(
 		SessionID: sessionID,
 		Timings:   result.Timings,
 	}))
+}
+
+func (h *Handler) persistTurn(
+	userID, sessionID, userMessage, assistantMessage string,
+	history []providers.ChatMessage,
+	timings protocol.TurnTimings,
+	skipped bool,
+) {
+	if skipped || h.Conversations == nil || !h.Conversations.Enabled {
+		return
+	}
+
+	turnIndex := textTurnIndex(history)
+	go func() {
+		ctx := context.Background()
+		conversationID, err := h.Conversations.GetOrCreateText(ctx, userID, sessionID)
+		if err != nil {
+			log.Warn("failed to get or create text conversation", map[string]any{
+				"userId":    log.ShortID(userID),
+				"sessionId": sessionID,
+				"error":     err.Error(),
+			})
+			return
+		}
+		h.Conversations.PersistTurnAsync(storage.SaveTurnInput{
+			ConversationID:      conversationID,
+			UserID:              userID,
+			TurnIndex:           turnIndex,
+			UserTranscript:      userMessage,
+			AssistantTranscript: assistantMessage,
+			Timings:             timings,
+		})
+	}()
+}
+
+func textTurnIndex(history []providers.ChatMessage) int {
+	n := 0
+	for _, msg := range history {
+		if msg.Role == "user" {
+			n++
+		}
+	}
+	return n
 }
 
 func (h *Handler) persistFacts(userID, sessionID, transcript string) {
