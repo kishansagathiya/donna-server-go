@@ -15,6 +15,7 @@ import (
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
@@ -126,6 +127,9 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/chat", chatHandler.ServeHTTP)
 
+	conversationsHandler := &conversations.Handler{Store: convStore}
+	conversations.RegisterRoutes(r, authMiddleware, conversationsHandler)
+
 	voiceHandler := &voice.Handler{
 		Config:        cfg,
 		Auth:          authCfg,
@@ -163,6 +167,7 @@ func main() {
 	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
+	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)

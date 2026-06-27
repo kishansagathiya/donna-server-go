@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -218,4 +219,202 @@ func (c *Conversations) EndAsync(conversationID string) {
 			})
 		}
 	}()
+}
+
+type ConversationSummary struct {
+	ID              string  `json:"id"`
+	Channel         string  `json:"channel"`
+	ClientSessionID *string `json:"client_session_id,omitempty"`
+	VoiceSessionID  *string `json:"voice_session_id,omitempty"`
+	Preview         string  `json:"preview"`
+	TurnCount       int     `json:"turn_count"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	EndedAt         *string `json:"ended_at,omitempty"`
+}
+
+type StoredTurn struct {
+	TurnIndex           int    `json:"turn_index"`
+	UserTranscript      string `json:"user_transcript"`
+	AssistantTranscript string `json:"assistant_transcript"`
+	CreatedAt           string `json:"created_at"`
+}
+
+type ConversationDetail struct {
+	ID              string       `json:"id"`
+	Channel         string       `json:"channel"`
+	ClientSessionID *string      `json:"client_session_id,omitempty"`
+	VoiceSessionID  *string      `json:"voice_session_id,omitempty"`
+	CreatedAt       string       `json:"created_at"`
+	EndedAt         *string      `json:"ended_at,omitempty"`
+	Turns           []StoredTurn `json:"turns"`
+}
+
+func (c *Conversations) ListForUser(ctx context.Context, userID string, limit int) ([]ConversationSummary, error) {
+	if !c.Enabled {
+		return nil, fmt.Errorf("conversation persistence disabled")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	q := url.Values{}
+	q.Set("select", "id,channel,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("user_id", "eq."+userID)
+	q.Set("order", "created_at.desc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+
+	var rows []struct {
+		ID              string  `json:"id"`
+		Channel         string  `json:"channel"`
+		ClientSessionID *string `json:"client_session_id"`
+		VoiceSessionID  *string `json:"voice_session_id"`
+		CreatedAt       string  `json:"created_at"`
+		EndedAt         *string `json:"ended_at"`
+	}
+	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return []ConversationSummary{}, nil
+	}
+
+	ids := make([]string, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+
+	turnsByConversation, err := c.loadTurnsForConversations(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	summaries := make([]ConversationSummary, 0, len(rows))
+	for _, row := range rows {
+		turns := turnsByConversation[row.ID]
+		preview := ""
+		updatedAt := row.CreatedAt
+		if len(turns) > 0 {
+			preview = truncatePreview(turns[0].UserTranscript)
+			updatedAt = turns[len(turns)-1].CreatedAt
+		}
+		summaries = append(summaries, ConversationSummary{
+			ID:              row.ID,
+			Channel:         row.Channel,
+			ClientSessionID: row.ClientSessionID,
+			VoiceSessionID:  row.VoiceSessionID,
+			Preview:         preview,
+			TurnCount:       len(turns),
+			CreatedAt:       row.CreatedAt,
+			UpdatedAt:       updatedAt,
+			EndedAt:         row.EndedAt,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+	})
+
+	return summaries, nil
+}
+
+func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID string) (*ConversationDetail, error) {
+	if !c.Enabled {
+		return nil, fmt.Errorf("conversation persistence disabled")
+	}
+
+	q := url.Values{}
+	q.Set("select", "id,channel,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("id", "eq."+conversationID)
+	q.Set("user_id", "eq."+userID)
+	q.Set("limit", "1")
+
+	var rows []struct {
+		ID              string  `json:"id"`
+		Channel         string  `json:"channel"`
+		ClientSessionID *string `json:"client_session_id"`
+		VoiceSessionID  *string `json:"voice_session_id"`
+		CreatedAt       string  `json:"created_at"`
+		EndedAt         *string `json:"ended_at"`
+	}
+	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	turns, err := c.loadTurns(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+
+	row := rows[0]
+	return &ConversationDetail{
+		ID:              row.ID,
+		Channel:         row.Channel,
+		ClientSessionID: row.ClientSessionID,
+		VoiceSessionID:  row.VoiceSessionID,
+		CreatedAt:       row.CreatedAt,
+		EndedAt:         row.EndedAt,
+		Turns:           turns,
+	}, nil
+}
+
+func (c *Conversations) loadTurns(ctx context.Context, conversationID string) ([]StoredTurn, error) {
+	q := url.Values{}
+	q.Set("select", "turn_index,user_transcript,assistant_transcript,created_at")
+	q.Set("conversation_id", "eq."+conversationID)
+	q.Set("order", "turn_index.asc")
+
+	var rows []StoredTurn
+	if err := c.DB.Get(ctx, "conversation_turns", q, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (c *Conversations) loadTurnsForConversations(ctx context.Context, conversationIDs []string) (map[string][]StoredTurn, error) {
+	result := make(map[string][]StoredTurn, len(conversationIDs))
+	if len(conversationIDs) == 0 {
+		return result, nil
+	}
+
+	q := url.Values{}
+	q.Set("select", "conversation_id,turn_index,user_transcript,assistant_transcript,created_at")
+	q.Set("conversation_id", "in.("+strings.Join(conversationIDs, ",")+")")
+	q.Set("order", "turn_index.asc")
+
+	var rows []struct {
+		ConversationID      string `json:"conversation_id"`
+		TurnIndex           int    `json:"turn_index"`
+		UserTranscript      string `json:"user_transcript"`
+		AssistantTranscript string `json:"assistant_transcript"`
+		CreatedAt           string `json:"created_at"`
+	}
+	if err := c.DB.Get(ctx, "conversation_turns", q, &rows); err != nil {
+		return nil, err
+	}
+
+	for _, row := range rows {
+		result[row.ConversationID] = append(result[row.ConversationID], StoredTurn{
+			TurnIndex:           row.TurnIndex,
+			UserTranscript:      row.UserTranscript,
+			AssistantTranscript: row.AssistantTranscript,
+			CreatedAt:           row.CreatedAt,
+		})
+	}
+	return result, nil
+}
+
+func truncatePreview(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "\n", " ")
+	if len(text) <= 80 {
+		return text
+	}
+	return text[:77] + "..."
 }
