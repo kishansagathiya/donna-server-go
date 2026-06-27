@@ -43,6 +43,7 @@ func TestList_success(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"id":                "conv-1",
 				"channel":           "text",
+				"title":             "Hello Donna",
 				"client_session_id": "sess-1",
 				"created_at":        "2026-06-01T10:00:00Z",
 			}})
@@ -82,8 +83,8 @@ func TestList_success(t *testing.T) {
 	if len(body.Conversations) != 1 {
 		t.Fatalf("got %d conversations, want 1", len(body.Conversations))
 	}
-	if body.Conversations[0].Preview != "Hello Donna" {
-		t.Fatalf("preview %q, want %q", body.Conversations[0].Preview, "Hello Donna")
+	if body.Conversations[0].Title != "Hello Donna" {
+		t.Fatalf("title %q, want %q", body.Conversations[0].Title, "Hello Donna")
 	}
 }
 

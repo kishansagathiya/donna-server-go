@@ -183,6 +183,17 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		return err
 	}
 
+	if input.TurnIndex == 0 {
+		if title := deriveConversationTitle(input.UserTranscript, input.AssistantTranscript); title != "" {
+			if err := c.setTitle(ctx, input.ConversationID, title); err != nil {
+				log.Warn("failed to set conversation title", map[string]any{
+					"conversationId": input.ConversationID,
+					"error":          err.Error(),
+				})
+			}
+		}
+	}
+
 	log.Print("turn saved", map[string]any{
 		"conversationId":     input.ConversationID,
 		"turnIndex":          input.TurnIndex,
@@ -224,6 +235,7 @@ func (c *Conversations) EndAsync(conversationID string) {
 type ConversationSummary struct {
 	ID              string  `json:"id"`
 	Channel         string  `json:"channel"`
+	Title           string  `json:"title"`
 	ClientSessionID *string `json:"client_session_id,omitempty"`
 	VoiceSessionID  *string `json:"voice_session_id,omitempty"`
 	Preview         string  `json:"preview"`
@@ -243,6 +255,7 @@ type StoredTurn struct {
 type ConversationDetail struct {
 	ID              string       `json:"id"`
 	Channel         string       `json:"channel"`
+	Title           string       `json:"title"`
 	ClientSessionID *string      `json:"client_session_id,omitempty"`
 	VoiceSessionID  *string      `json:"voice_session_id,omitempty"`
 	CreatedAt       string       `json:"created_at"`
@@ -262,7 +275,7 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 	}
 
 	q := url.Values{}
-	q.Set("select", "id,channel,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("select", "id,channel,title,client_session_id,voice_session_id,created_at,ended_at")
 	q.Set("user_id", "eq."+userID)
 	q.Set("order", "created_at.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
@@ -270,6 +283,7 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 	var rows []struct {
 		ID              string  `json:"id"`
 		Channel         string  `json:"channel"`
+		Title           string  `json:"title"`
 		ClientSessionID *string `json:"client_session_id"`
 		VoiceSessionID  *string `json:"voice_session_id"`
 		CreatedAt       string  `json:"created_at"`
@@ -298,12 +312,20 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 		preview := ""
 		updatedAt := row.CreatedAt
 		if len(turns) > 0 {
-			preview = truncatePreview(turns[0].UserTranscript)
+			preview = truncatePreview(latestTurnSnippet(turns))
 			updatedAt = turns[len(turns)-1].CreatedAt
+		}
+		title := strings.TrimSpace(row.Title)
+		if title == "" && len(turns) > 0 {
+			title = deriveConversationTitle(turns[0].UserTranscript, turns[0].AssistantTranscript)
+		}
+		if title == "" {
+			title = fallbackConversationTitle(row.Channel, row.CreatedAt)
 		}
 		summaries = append(summaries, ConversationSummary{
 			ID:              row.ID,
 			Channel:         row.Channel,
+			Title:           title,
 			ClientSessionID: row.ClientSessionID,
 			VoiceSessionID:  row.VoiceSessionID,
 			Preview:         preview,
@@ -327,7 +349,7 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 	}
 
 	q := url.Values{}
-	q.Set("select", "id,channel,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("select", "id,channel,title,client_session_id,voice_session_id,created_at,ended_at")
 	q.Set("id", "eq."+conversationID)
 	q.Set("user_id", "eq."+userID)
 	q.Set("limit", "1")
@@ -335,6 +357,7 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 	var rows []struct {
 		ID              string  `json:"id"`
 		Channel         string  `json:"channel"`
+		Title           string  `json:"title"`
 		ClientSessionID *string `json:"client_session_id"`
 		VoiceSessionID  *string `json:"voice_session_id"`
 		CreatedAt       string  `json:"created_at"`
@@ -353,9 +376,17 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 	}
 
 	row := rows[0]
+	title := strings.TrimSpace(row.Title)
+	if title == "" && len(turns) > 0 {
+		title = deriveConversationTitle(turns[0].UserTranscript, turns[0].AssistantTranscript)
+	}
+	if title == "" {
+		title = fallbackConversationTitle(row.Channel, row.CreatedAt)
+	}
 	return &ConversationDetail{
 		ID:              row.ID,
 		Channel:         row.Channel,
+		Title:           title,
 		ClientSessionID: row.ClientSessionID,
 		VoiceSessionID:  row.VoiceSessionID,
 		CreatedAt:       row.CreatedAt,
@@ -417,4 +448,40 @@ func truncatePreview(text string) string {
 		return text
 	}
 	return text[:77] + "..."
+}
+
+func deriveConversationTitle(userTranscript, assistantTranscript string) string {
+	if title := truncatePreview(userTranscript); title != "" {
+		return title
+	}
+	return truncatePreview(assistantTranscript)
+}
+
+func latestTurnSnippet(turns []StoredTurn) string {
+	if len(turns) == 0 {
+		return ""
+	}
+	last := turns[len(turns)-1]
+	if snippet := strings.TrimSpace(last.UserTranscript); snippet != "" {
+		return snippet
+	}
+	return last.AssistantTranscript
+}
+
+func fallbackConversationTitle(channel, createdAt string) string {
+	label := "Chat"
+	if channel == "voice" {
+		label = "Voice chat"
+	}
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return label
+	}
+	return fmt.Sprintf("%s · %s", label, t.Format("Jan 2"))
+}
+
+func (c *Conversations) setTitle(ctx context.Context, conversationID, title string) error {
+	q := url.Values{}
+	q.Set("id", "eq."+conversationID)
+	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
 }

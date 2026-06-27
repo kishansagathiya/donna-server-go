@@ -51,6 +51,7 @@ type exportConversation struct {
 	ID              string `json:"id"`
 	UserID          string `json:"user_id"`
 	Channel         string `json:"channel"`
+	Title           string `json:"title,omitempty"`
 	VoiceSessionID  string `json:"voice_session_id,omitempty"`
 	ClientSessionID string `json:"client_session_id,omitempty"`
 	EndedAt         string `json:"ended_at,omitempty"`
@@ -221,7 +222,7 @@ func (e *Exporter) writePreferences(ctx context.Context, userID string, zw *zip.
 
 func (e *Exporter) writeConversations(ctx context.Context, userID string, zw *zip.Writer, manifest *exportManifest) (int, error) {
 	q := url.Values{}
-	q.Set("select", "id,user_id,channel,voice_session_id,client_session_id,ended_at,created_at")
+	q.Set("select", "id,user_id,channel,title,voice_session_id,client_session_id,ended_at,created_at")
 	q.Set("user_id", "eq."+userID)
 	q.Set("order", "created_at.asc")
 
@@ -229,6 +230,7 @@ func (e *Exporter) writeConversations(ctx context.Context, userID string, zw *zi
 		ID              string  `json:"id"`
 		UserID          string  `json:"user_id"`
 		Channel         string  `json:"channel"`
+		Title           string  `json:"title"`
 		VoiceSessionID  *string `json:"voice_session_id"`
 		ClientSessionID *string `json:"client_session_id"`
 		EndedAt         *string `json:"ended_at"`
@@ -251,6 +253,7 @@ func (e *Exporter) writeConversations(ctx context.Context, userID string, zw *zi
 			ID:        conv.ID,
 			UserID:    conv.UserID,
 			Channel:   conv.Channel,
+			Title:     conv.Title,
 			CreatedAt: conv.CreatedAt,
 			Turns:     turns,
 		}
