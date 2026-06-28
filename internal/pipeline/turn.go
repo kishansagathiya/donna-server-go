@@ -86,7 +86,7 @@ func (e *Engine) RunVoiceTurn(
 	}
 
 	if classification == TranscriptFailedAttempt {
-		if options.Mode.IsListen() || !options.CanRetry {
+		if options.Mode.IsNotes() || !options.CanRetry {
 			return finishSkipped(phase, timings, t0, true, "failed_attempt"), nil
 		}
 		phase(protocol.TurnPhaseSynthesizing)
@@ -108,7 +108,7 @@ func (e *Engine) RunVoiceTurn(
 		callbacks.OnTranscript(transcript)
 	}
 
-	if options.Mode.IsListen() {
+	if options.Mode.IsNotes() {
 		timings.TotalMs = int(time.Since(t0).Milliseconds())
 		phase(protocol.TurnPhaseDone)
 		return TurnResult{

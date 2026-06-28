@@ -3,17 +3,17 @@ package pipeline
 type InteractionMode string
 
 const (
-	ModeTalk   InteractionMode = "talk"
-	ModeListen InteractionMode = "listen"
+	ModeTalk  InteractionMode = "talk"
+	ModeNotes InteractionMode = "notes"
 )
 
 func ParseMode(raw string) InteractionMode {
-	if raw == string(ModeListen) {
-		return ModeListen
+	if raw == string(ModeNotes) || raw == "listen" {
+		return ModeNotes
 	}
 	return ModeTalk
 }
 
-func (m InteractionMode) IsListen() bool {
-	return m == ModeListen
+func (m InteractionMode) IsNotes() bool {
+	return m == ModeNotes
 }

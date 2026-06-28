@@ -166,7 +166,7 @@ func (h *Handler) streamReply(
 	h.persistFacts(userID, sessionID, result.Transcript)
 	h.persistTurn(userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped)
 
-	if mode.IsListen() {
+	if mode.IsNotes() {
 		writeSSE("done", mustJSON(chatResponse{
 			Reply:     "",
 			SessionID: sessionID,

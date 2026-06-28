@@ -317,7 +317,7 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		s.hasRetried = true
 	}
 
-	if result.Transcript != "" && !result.Skipped && !result.UsedRetry && !s.mode.IsListen() {
+	if result.Transcript != "" && !result.Skipped && !result.UsedRetry && !s.mode.IsNotes() {
 		s.appendHistory(result.Transcript, result.ReplyText)
 	}
 

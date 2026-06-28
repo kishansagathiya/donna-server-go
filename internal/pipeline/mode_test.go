@@ -3,7 +3,10 @@ package pipeline
 import "testing"
 
 func TestParseMode(t *testing.T) {
-	if got := ParseMode("listen"); got != ModeListen {
+	if got := ParseMode("notes"); got != ModeNotes {
+		t.Fatalf("ParseMode(notes) = %q", got)
+	}
+	if got := ParseMode("listen"); got != ModeNotes {
 		t.Fatalf("ParseMode(listen) = %q", got)
 	}
 	if got := ParseMode("talk"); got != ModeTalk {
@@ -14,11 +17,11 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
-func TestInteractionMode_IsListen(t *testing.T) {
-	if !ModeListen.IsListen() {
-		t.Fatal("ModeListen should be listen")
+func TestInteractionMode_IsNotes(t *testing.T) {
+	if !ModeNotes.IsNotes() {
+		t.Fatal("ModeNotes should be notes")
 	}
-	if ModeTalk.IsListen() {
-		t.Fatal("ModeTalk should not be listen")
+	if ModeTalk.IsNotes() {
+		t.Fatal("ModeTalk should not be notes")
 	}
 }
