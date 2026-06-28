@@ -127,17 +127,26 @@ func (s *Session) handleSessionStart(ctx context.Context, msg *protocol.ClientMe
 		"user":    log.ShortID(s.userID),
 	})
 
-	if s.conversations != nil && s.conversations.Enabled && s.cfg.RequireAuth {
-		conversationID, err := s.conversations.Create(ctx, s.userID, s.sessionID)
-		if err != nil {
-			log.Warn("failed to create conversation", map[string]any{
-				"session": log.ShortID(s.sessionID),
-				"error":   err.Error(),
-			})
-		} else {
-			s.conversationID = conversationID
-		}
+	return nil
+}
+
+func (s *Session) ensureConversation(ctx context.Context) error {
+	if s.conversationID != "" {
+		return nil
 	}
+	if s.conversations == nil || !s.conversations.Enabled || !s.cfg.RequireAuth {
+		return nil
+	}
+
+	conversationID, err := s.conversations.Create(ctx, s.userID, s.sessionID)
+	if err != nil {
+		log.Warn("failed to create conversation", map[string]any{
+			"session": log.ShortID(s.sessionID),
+			"error":   err.Error(),
+		})
+		return err
+	}
+	s.conversationID = conversationID
 	return nil
 }
 
@@ -334,7 +343,7 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 			})
 		}
 
-		if s.conversationID != "" {
+		if err := s.ensureConversation(ctx); err == nil && s.conversationID != "" {
 			turnIndex := s.turnIndex
 			s.turnIndex++
 

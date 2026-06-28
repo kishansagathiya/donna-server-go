@@ -183,14 +183,13 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		return err
 	}
 
-	if input.TurnIndex == 0 {
-		if title := deriveConversationTitle(input.UserTranscript, input.AssistantTranscript); title != "" {
-			if err := c.setTitle(ctx, input.ConversationID, title); err != nil {
-				log.Warn("failed to set conversation title", map[string]any{
-					"conversationId": input.ConversationID,
-					"error":          err.Error(),
-				})
-			}
+	if title := deriveConversationTitle(input.UserTranscript, input.AssistantTranscript); title != "" {
+		if err := c.setTitleIfEmpty(ctx, input.ConversationID, title); err != nil {
+			log.Warn("failed to set conversation title", map[string]any{
+				"conversationId": input.ConversationID,
+				"turnIndex":      input.TurnIndex,
+				"error":          err.Error(),
+			})
 		}
 	}
 
@@ -223,7 +222,14 @@ func (c *Conversations) EndAsync(conversationID string) {
 		return
 	}
 	go func() {
-		if err := c.End(context.Background(), conversationID); err != nil {
+		ctx := context.Background()
+		if err := c.ensureTitleFromTurns(ctx, conversationID); err != nil {
+			log.Warn("failed to ensure conversation title", map[string]any{
+				"conversationId": conversationID,
+				"error":          err.Error(),
+			})
+		}
+		if err := c.End(ctx, conversationID); err != nil {
 			log.Warn("failed to end conversation", map[string]any{
 				"conversationId": conversationID,
 				"error":          err.Error(),
@@ -321,6 +327,9 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 		}
 		if title == "" {
 			title = fallbackConversationTitle(row.Channel, row.CreatedAt)
+		}
+		if len(turns) == 0 {
+			continue
 		}
 		summaries = append(summaries, ConversationSummary{
 			ID:              row.ID,
@@ -484,4 +493,47 @@ func (c *Conversations) setTitle(ctx context.Context, conversationID, title stri
 	q := url.Values{}
 	q.Set("id", "eq."+conversationID)
 	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
+}
+
+func (c *Conversations) setTitleIfEmpty(ctx context.Context, conversationID, title string) error {
+	q := url.Values{}
+	q.Set("id", "eq."+conversationID)
+	q.Set("title", "eq.")
+	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
+}
+
+func (c *Conversations) ensureTitleFromTurns(ctx context.Context, conversationID string) error {
+	q := url.Values{}
+	q.Set("select", "title,channel,created_at")
+	q.Set("id", "eq."+conversationID)
+	q.Set("limit", "1")
+
+	var rows []struct {
+		Title     string `json:"title"`
+		Channel   string `json:"channel"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
+		return err
+	}
+	if len(rows) == 0 || strings.TrimSpace(rows[0].Title) != "" {
+		return nil
+	}
+
+	turns, err := c.loadTurns(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if len(turns) == 0 {
+		return nil
+	}
+
+	title := deriveConversationTitle(turns[0].UserTranscript, turns[0].AssistantTranscript)
+	if title == "" {
+		title = fallbackConversationTitle(rows[0].Channel, rows[0].CreatedAt)
+	}
+	if title == "" {
+		return nil
+	}
+	return c.setTitle(ctx, conversationID, title)
 }
