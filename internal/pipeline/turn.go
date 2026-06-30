@@ -210,6 +210,17 @@ func (e *Engine) llmForUser(ctx context.Context, userID string) *providers.LLM {
 }
 
 func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessionID string) (TranscriptAugmentation, string) {
+	base := TranscriptAugmentation{Transcript: transcript}
+	if !NeedsUserContext(transcript) {
+		base.Text = FormatAugmentedUserMessage(base)
+		return base, ""
+	}
+
+	minScore := defaultMemoryMinScore
+	if e.Config != nil && e.Config.MemoryMinScore > 0 {
+		minScore = e.Config.MemoryMinScore
+	}
+
 	var (
 		augmented      TranscriptAugmentation
 		profileSummary string
@@ -219,7 +230,7 @@ func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessio
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		augmented = DefaultAugment(ctx, e.KB, e.Notes, transcript, userID, sessionID)
+		augmented = DefaultAugment(ctx, e.KB, e.Notes, transcript, userID, sessionID, minScore)
 	}()
 	go func() {
 		defer wg.Done()

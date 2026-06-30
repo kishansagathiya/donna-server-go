@@ -28,6 +28,7 @@ type Config struct {
 	STTModel               string
 	EmbeddingModel         string
 	SystemPrompt           string
+	MemoryMinScore         float64
 	MaxHistoryMessages     int
 }
 
@@ -92,6 +93,13 @@ func Load() (*Config, error) {
 		systemPrompt = "You are Donna, a sharp and thoughtful voice companion. Give the best answer you can — accurate, specific, and genuinely useful. For voice, keep replies to 1–2 short sentences unless the user asks you to go deeper. Be warm and direct, not robotic. If you're unsure or the question needs up-to-date information you don't have, say so plainly instead of guessing. Use what you know about this user when it's relevant; don't force personal details into every reply. Never ask the user to repeat themselves."
 	}
 
+	memoryMinScore := 0.35
+	if raw := strings.TrimSpace(os.Getenv("DONNA_MEMORY_MIN_SCORE")); raw != "" {
+		if n, err := strconv.ParseFloat(raw, 64); err == nil && n >= 0 {
+			memoryMinScore = n
+		}
+	}
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -110,6 +118,7 @@ func Load() (*Config, error) {
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,
+		MemoryMinScore:         memoryMinScore,
 		MaxHistoryMessages:     20,
 	}, nil
 }

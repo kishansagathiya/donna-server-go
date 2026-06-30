@@ -43,7 +43,7 @@ func TestApplyTokenBudget_dropsTailItems(t *testing.T) {
 		{Text: "bbbb", Score: 2},
 		{Text: "cccc", Score: 1},
 	}
-	got := applyTokenBudget(hits, 12)
+	got := applyTokenBudget(hits, 12, 0)
 	if len(got) != 2 || got[0] != "aaaa" || got[1] != "bbbb" {
 		t.Fatalf("unexpected budget trim: %#v", got)
 	}
@@ -51,7 +51,7 @@ func TestApplyTokenBudget_dropsTailItems(t *testing.T) {
 
 func TestApplyTokenBudget_keepsFirstWhenOverBudget(t *testing.T) {
 	hits := []storage.MemoryHit{{Text: strings.Repeat("x", 100), Score: 1}}
-	got := applyTokenBudget(hits, 10)
+	got := applyTokenBudget(hits, 10, 0)
 	if len(got) != 1 || got[0] != hits[0].Text {
 		t.Fatalf("expected first hit kept: %#v", got)
 	}
@@ -62,7 +62,7 @@ func TestApplyTokenBudget_skipsEmptyText(t *testing.T) {
 		{Text: "", Score: 2},
 		{Text: "valid", Score: 1},
 	}
-	got := applyTokenBudget(hits, 100)
+	got := applyTokenBudget(hits, 100, 0)
 	if len(got) != 1 || got[0] != "valid" {
 		t.Fatalf("unexpected result: %#v", got)
 	}
@@ -109,7 +109,7 @@ func TestDefaultAugment_hybridPath(t *testing.T) {
 		http.NotFound(w, r)
 	})
 
-	got := DefaultAugment(context.Background(), kb, nil, "what do you know?", "user-1", "sess-1")
+	got := DefaultAugment(context.Background(), kb, nil, "what do you know?", "user-1", "sess-1", 0.35)
 	if len(got.Retrieved) != 1 || got.Retrieved[0] != "hybrid memory hit" {
 		t.Fatalf("unexpected retrieved: %#v", got.Retrieved)
 	}
@@ -133,7 +133,7 @@ func TestDefaultAugment_fallbackOnRPCError(t *testing.T) {
 		http.NotFound(w, r)
 	})
 
-	got := DefaultAugment(context.Background(), kb, nil, "coffee preferences", "user-1", "sess-1")
+	got := DefaultAugment(context.Background(), kb, nil, "coffee preferences", "user-1", "sess-1", 0.35)
 	if len(got.Retrieved) == 0 {
 		t.Fatal("expected legacy facts in fallback path")
 	}
@@ -167,7 +167,7 @@ func TestDefaultAugment_deduplicatesLegacyHits(t *testing.T) {
 
 	notes := &storage.Notes{DB: kb.DB, Enabled: true}
 
-	got := DefaultAugment(context.Background(), kb, notes, "same fact details", "user-1", "sess-1")
+	got := DefaultAugment(context.Background(), kb, notes, "same fact details", "user-1", "sess-1", 0.35)
 	if len(got.Retrieved) != 1 {
 		t.Fatalf("expected deduplicated single hit, got %#v", got.Retrieved)
 	}
@@ -187,7 +187,7 @@ func TestDefaultAugment_skipsRetrievalForChitchat(t *testing.T) {
 	kb.DB = storage.NewSupabase(srv.URL, "test-key")
 	notes := &storage.Notes{DB: kb.DB, Enabled: true}
 
-	got := DefaultAugment(context.Background(), kb, notes, "thanks!", "user-1", "sess-1")
+	got := DefaultAugment(context.Background(), kb, notes, "thanks!", "user-1", "sess-1", 0.35)
 	if calls != 0 {
 		t.Fatalf("expected zero DB calls for chitchat, got %d", calls)
 	}
@@ -233,8 +233,35 @@ func TestDefaultAugment_capsLegacyAt10(t *testing.T) {
 	kb.DB = storage.NewSupabase(srv.URL, "test-key")
 	notes := &storage.Notes{DB: kb.DB, Enabled: true}
 
-	got := DefaultAugment(context.Background(), kb, notes, "note fact mix", "user-1", "sess-1")
+	got := DefaultAugment(context.Background(), kb, notes, "note fact mix", "user-1", "sess-1", 0.35)
 	if len(got.Retrieved) != 10 {
 		t.Fatalf("expected cap of 10, got %d: %#v", len(got.Retrieved), got.Retrieved)
+	}
+}
+
+func TestApplyTokenBudget_skipsLowScore(t *testing.T) {
+	hits := []storage.MemoryHit{
+		{Text: "relevant", Score: 0.9},
+		{Text: "weak", Score: 0.1},
+	}
+	got := applyTokenBudget(hits, 1000, 0.35)
+	if len(got) != 1 || got[0] != "relevant" {
+		t.Fatalf("expected only high-score hit, got %#v", got)
+	}
+}
+
+func TestDefaultAugment_skipsHybridForChitchat(t *testing.T) {
+	calls := 0
+	kb := newTestKnowledge(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.NotFound(w, r)
+	})
+
+	got := DefaultAugment(context.Background(), kb, nil, "thanks!", "user-1", "sess-1", 0.35)
+	if calls != 0 {
+		t.Fatalf("expected zero DB calls for chitchat on hybrid path, got %d", calls)
+	}
+	if len(got.Retrieved) != 0 {
+		t.Fatalf("expected no retrieved items, got %#v", got.Retrieved)
 	}
 }

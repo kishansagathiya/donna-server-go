@@ -59,33 +59,40 @@ func fmtQuoteUser(transcript string) string {
 	return `User said: "` + transcript + `"`
 }
 
+
 // augmentTokenBudget is the soft character cap (~1500 tokens ≈ 6000 chars) for
 // retrieved memory injected into the prompt. Lowest-scoring items are dropped
 // from the tail when the budget is exceeded.
 const augmentTokenBudget = 6000
 
-func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string) TranscriptAugmentation {
+// defaultMemoryMinScore is used when no threshold is configured (tests, zero value).
+const defaultMemoryMinScore = 0.35
+
+func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string, minScore float64) TranscriptAugmentation {
 	_ = sessionID
 	base := TranscriptAugmentation{Transcript: transcript}
+
+	if looksLikeChitchat(transcript) {
+		base.Text = FormatAugmentedUserMessage(base)
+		return base
+	}
+
+	if minScore <= 0 {
+		minScore = defaultMemoryMinScore
+	}
 
 	// Preferred path: a single hybrid match_memory RPC that blends vector
 	// similarity, FTS, and recency across both facts and notes.
 	if kb != nil && kb.Enabled {
 		hits, err := kb.RetrieveMemory(ctx, userID, transcript, 20)
 		if err == nil {
-			base.Retrieved = applyTokenBudget(hits, augmentTokenBudget)
+			base.Retrieved = applyTokenBudget(hits, augmentTokenBudget, minScore)
 			base.Text = FormatAugmentedUserMessage(base)
 			return base
 		}
 	}
 
 	// Graceful degradation: legacy FTS + recency path (no embeddings/RPC).
-	// Skip retrieval entirely for short, non-memory chitchat (e.g. "hey",
-	// "thanks", "ok") to avoid needless DB round-trips on the hot path.
-	if looksLikeChitchat(transcript) {
-		base.Text = FormatAugmentedUserMessage(base)
-		return base
-	}
 
 	var retrieved []string
 	seen := make(map[string]struct{})
@@ -129,11 +136,15 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 
 // applyTokenBudget trims the retrieved list to fit within charBudget, dropping
 // lowest-scoring items from the tail (hits are already score-descending).
-func applyTokenBudget(hits []storage.MemoryHit, charBudget int) []string {
+// Hits below minScore are excluded so weakly related memories are not injected.
+func applyTokenBudget(hits []storage.MemoryHit, charBudget int, minScore float64) []string {
 	out := make([]string, 0, len(hits))
 	used := 0
 	for _, h := range hits {
 		if h.Text == "" {
+			continue
+		}
+		if h.Score < minScore {
 			continue
 		}
 		if used+len(h.Text) > charBudget && len(out) > 0 {
