@@ -46,12 +46,10 @@ func (e *Engine) RunTextTurn(
 
 	phase(protocol.TurnPhaseGenerating)
 	augStart := time.Now()
-	augmented := DefaultAugment(ctx, e.KB, e.Notes, message, options.UserID, options.SessionID)
-
-	profileSummary := ""
-	if e.KB != nil && e.KB.Enabled {
-		profileSummary, _ = e.KB.GetUserProfileSummary(ctx, options.UserID)
-	}
+	// Retrieve memory and the user profile in parallel (the voice path already
+	// does this via loadTurnContext); running them sequentially here roughly
+	// doubled pre-LLM latency on the text chat hot path.
+	augmented, profileSummary := e.loadTurnContext(ctx, message, options.UserID, options.SessionID)
 	timings.AugmentMs = int(time.Since(augStart).Milliseconds())
 
 	systemPrompt := e.Config.SystemPrompt

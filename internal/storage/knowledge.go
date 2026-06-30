@@ -90,24 +90,27 @@ func (k *Knowledge) GetUserProfileSummary(ctx context.Context, userID string) (s
 		return "", nil
 	}
 
-	var rows []struct {
-		Summary *string `json:"summary"`
-	}
-	q := url.Values{}
-	q.Set("select", "summary")
-	q.Set("user_id", "eq."+userID)
-
-	if err := k.DB.Get(ctx, "kb_user_profiles", q, &rows); err != nil {
+	// Single GET selecting both summary and identity_facts (previously this
+	// made two sequential GETs to the same kb_user_profiles row via
+	// appendIdentityFacts).
+	profile, err := k.GetUserProfileRaw(ctx, userID)
+	if err != nil {
 		log.Warn("failed to load user profile", map[string]any{
 			"userId": log.ShortID(userID),
 			"error":  err.Error(),
 		})
 		return "", nil
 	}
-	if len(rows) == 0 || rows[0].Summary == nil {
-		return k.appendIdentityFacts(ctx, userID, ""), nil
+
+	summary := strings.TrimSpace(profile.Summary)
+	if len(profile.IdentityFacts) == 0 {
+		return summary, nil
 	}
-	return k.appendIdentityFacts(ctx, userID, strings.TrimSpace(*rows[0].Summary)), nil
+	prefix := strings.Join(profile.IdentityFacts, " ")
+	if summary == "" {
+		return prefix, nil
+	}
+	return prefix + " " + summary, nil
 }
 
 func (k *Knowledge) fetchRecentFacts(ctx context.Context, userID string, limit int) ([]factRow, error) {

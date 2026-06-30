@@ -14,6 +14,35 @@ type TranscriptAugmentation struct {
 	SessionNotes string
 }
 
+// chitchatTokens are whole-message greetings/acknowledgements that carry no
+// memory-retrieval signal (e.g. "hey", "thanks", "ok", "good morning"). When
+// the user's entire (normalized) message is one of these, the legacy FTS
+// fallback is skipped to avoid 3-4 needless DB round-trips on the hot path.
+// Matching is exact-after-normalization so legitimate short queries like
+// "coffee preferences" still retrieve.
+var chitchatTokens = map[string]struct{}{
+	"hey": {}, "hi": {}, "hello": {}, "yo": {}, "howdy": {}, "sup": {},
+	"ok": {}, "okay": {}, "k": {}, "kk": {}, "cool": {}, "nice": {},
+	"great": {}, "awesome": {}, "perfect": {}, "sounds good": {}, "got it": {},
+	"thanks": {}, "thank you": {}, "thx": {}, "ty": {}, "cheers": {},
+	"yeah": {}, "yes": {}, "yep": {}, "yup": {}, "no": {}, "nope": {},
+	"lol": {}, "haha": {}, "ha": {}, "lmao": {}, "wow": {}, "ohh": {},
+	"hmm": {}, "oh": {}, "ah": {}, "ugh": {}, "right": {}, "sure": {},
+	"bye": {}, "goodbye": {}, "gm": {}, "good morning": {}, "good night": {},
+	"gn": {}, "what's up": {}, "wassup": {},
+}
+
+// looksLikeChitchat reports whether the entire (normalized) message is a
+// known low-signal greeting/acknowledgement, in which case memory retrieval
+// is skipped. Partial matches are NOT treated as chitchat, so real queries
+// always retrieve.
+func looksLikeChitchat(transcript string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(transcript))
+	normalized = strings.TrimSpace(strings.Trim(normalized, "!?.,~"))
+	_, ok := chitchatTokens[normalized]
+	return ok
+}
+
 func FormatAugmentedUserMessage(augmented TranscriptAugmentation) string {
 	var parts []string
 	if len(augmented.Retrieved) > 0 {
@@ -51,6 +80,13 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 	}
 
 	// Graceful degradation: legacy FTS + recency path (no embeddings/RPC).
+	// Skip retrieval entirely for short, non-memory chitchat (e.g. "hey",
+	// "thanks", "ok") to avoid needless DB round-trips on the hot path.
+	if looksLikeChitchat(transcript) {
+		base.Text = FormatAugmentedUserMessage(base)
+		return base
+	}
+
 	var retrieved []string
 	seen := make(map[string]struct{})
 

@@ -173,6 +173,32 @@ func TestDefaultAugment_deduplicatesLegacyHits(t *testing.T) {
 	}
 }
 
+func TestDefaultAugment_skipsRetrievalForChitchat(t *testing.T) {
+	calls := 0
+	kb := &storage.Knowledge{
+		Enabled:  true,
+		Embedder: &fakeEmbedder{enabled: false},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	kb.DB = storage.NewSupabase(srv.URL, "test-key")
+	notes := &storage.Notes{DB: kb.DB, Enabled: true}
+
+	got := DefaultAugment(context.Background(), kb, notes, "thanks!", "user-1", "sess-1")
+	if calls != 0 {
+		t.Fatalf("expected zero DB calls for chitchat, got %d", calls)
+	}
+	if len(got.Retrieved) != 0 {
+		t.Fatalf("expected no retrieved items for chitchat, got %#v", got.Retrieved)
+	}
+	if !strings.Contains(got.Text, `User said: "thanks!"`) {
+		t.Fatalf("expected user quote preserved, got %q", got.Text)
+	}
+}
+
 func TestDefaultAugment_capsLegacyAt10(t *testing.T) {
 	kb := &storage.Knowledge{
 		Enabled:  true,

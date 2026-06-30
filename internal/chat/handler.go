@@ -75,6 +75,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	history := append([]providers.ChatMessage(nil), body.History...)
+	// Cap history server-side so long conversations don't inflate the prompt
+	// (and therefore TTFT). MaxHistoryMessages is otherwise only enforced on
+	// the voice path. Keep the most recent turns.
+	if h.Engine != nil && h.Engine.Config != nil {
+		if max := h.Engine.Config.MaxHistoryMessages; max > 0 && len(history) > max {
+			history = history[len(history)-max:]
+		}
+	}
 
 	mode := pipeline.ParseMode(body.Mode)
 
