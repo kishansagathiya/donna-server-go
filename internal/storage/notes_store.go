@@ -166,6 +166,20 @@ func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, e
 	return rows[0], nil
 }
 
+func (n *Notes) ListForDailyReview(ctx context.Context, userID string, limit int) ([]NoteSummary, error) {
+	q := url.Values{}
+	q.Set("select", n.summaryColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("order", "note_date.desc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+
+	var rows []NoteSummary
+	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int) ([]NoteSummary, error) {
 	q := url.Values{}
 	q.Set("select", n.summaryColumns())

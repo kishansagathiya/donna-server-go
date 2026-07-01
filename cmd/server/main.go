@@ -95,7 +95,8 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
-	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync}
+	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm}
+	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker}
 	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
@@ -165,7 +166,7 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
-	log.Print("notes: GET /notes/search, web-only CRUD at /notes/*", nil)
+	log.Print("notes: GET /notes/search, POST /notes/daily-check, web-only CRUD at /notes/*", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)

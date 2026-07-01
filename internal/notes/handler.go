@@ -14,8 +14,9 @@ import (
 )
 
 type Handler struct {
-	Store *storage.Notes
-	Sync  *Sync
+	Store  *storage.Notes
+	Sync   *Sync
+	Daily  *DailyChecker
 }
 
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +64,25 @@ func (h *Handler) Recent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, notes)
+}
+
+func (h *Handler) DailyCheck(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Daily == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notes_disabled"})
+		return
+	}
+
+	briefing, err := h.Daily.Check(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "daily_check_failed", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, briefing)
 }
 
 func (h *Handler) Quadrants(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +269,7 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		r.Use(authMiddleware)
 
 		r.Get("/search", h.Search)
+		r.Post("/daily-check", h.DailyCheck)
 
 		r.Group(func(r chi.Router) {
 			r.Use(RequireWebClient)
