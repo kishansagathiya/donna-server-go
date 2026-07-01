@@ -269,12 +269,12 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		r.Use(authMiddleware)
 
 		r.Get("/search", h.Search)
+		r.Post("/daily-check", h.DailyCheck)
 
 		r.Group(func(r chi.Router) {
 			r.Use(RequireWebClient)
 			r.Get("/recent", h.Recent)
 			r.Get("/quadrants", h.Quadrants)
-			r.Post("/daily-check", h.DailyCheck)
 			r.Post("/", h.Create)
 			r.Get("/{id}", h.Get)
 			r.Patch("/{id}", h.Update)
