@@ -270,6 +270,9 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 
 		r.Get("/search", h.Search)
 		r.Post("/daily-check", h.DailyCheck)
+		r.Get("/tags", h.ListTags)
+		r.Get("/tags/{tag}", h.NotesForTag)
+		r.Post("/recompute-tags", h.RecomputeTagCounts)
 
 		r.Group(func(r chi.Router) {
 			r.Use(RequireWebClient)
@@ -279,6 +282,8 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 			r.Get("/{id}", h.Get)
 			r.Patch("/{id}", h.Update)
 			r.Delete("/{id}", h.Delete)
+			r.Get("/{id}/tags", h.GetNoteTags)
+			r.Put("/{id}/tags", h.SetNoteTags)
 		})
 	})
 }

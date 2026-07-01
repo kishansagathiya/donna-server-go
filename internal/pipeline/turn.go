@@ -122,7 +122,7 @@ func (e *Engine) RunVoiceTurn(
 	augmented, profileSummary := e.loadTurnContext(ctx, transcript, options.UserID, options.SessionID)
 	timings.AugmentMs = int(time.Since(augStart).Milliseconds())
 
-	systemPrompt := e.Config.SystemPrompt
+	systemPrompt := e.resolveSystemPrompt(ctx, options.UserID)
 	if profileSummary != "" {
 		systemPrompt = systemPrompt + "\n\nKnown about this user:\n" + profileSummary
 	}

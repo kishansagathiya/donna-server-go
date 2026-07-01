@@ -30,6 +30,7 @@ type Config struct {
 	SystemPrompt           string
 	MemoryMinScore         float64
 	MaxHistoryMessages     int
+	Personas               []string
 }
 
 func Load() (*Config, error) {
@@ -100,6 +101,14 @@ func Load() (*Config, error) {
 		}
 	}
 
+	personas := parseModelList(os.Getenv("DONNA_PERSONAS"))
+	if len(personas) == 0 {
+		personas = []string{"companion", "boss", "coach", "therapist", "custom"}
+	}
+	if !containsString(personas, "companion") {
+		personas = append([]string{"companion"}, personas...)
+	}
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -120,6 +129,7 @@ func Load() (*Config, error) {
 		SystemPrompt:           systemPrompt,
 		MemoryMinScore:         memoryMinScore,
 		MaxHistoryMessages:     20,
+		Personas:               personas,
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,55 +13,75 @@ type Preferences struct {
 	DB      *Supabase
 	Enabled bool
 
-	mu         sync.Mutex
-	modelCache map[string]modelCacheEntry
+	mu    sync.Mutex
+	cache map[string]prefsCacheEntry
 }
 
-type modelCacheEntry struct {
-	value     string
-	expiresAt time.Time
+type prefsCacheEntry struct {
+	model       string
+	persona     string
+	personaCust string
+	expiresAt   time.Time
 }
 
-const llmModelCacheTTL = 60 * time.Second
+const prefsCacheTTL = 60 * time.Second
 
-func (p *Preferences) GetLLMModel(ctx context.Context, userID string) (string, error) {
+type PrefsRow struct {
+	LLMModel     string `json:"llm_model"`
+	Persona      string `json:"persona"`
+	PersonaCust  string `json:"persona_custom"`
+}
+
+// loadRow fetches the user's preferences row with a 60s per-user cache.
+func (p *Preferences) loadRow(ctx context.Context, userID string) (PrefsRow, error) {
 	if p == nil || !p.Enabled || p.DB == nil {
-		return "", nil
+		return PrefsRow{}, nil
 	}
 
 	now := time.Now()
 	p.mu.Lock()
-	if p.modelCache != nil {
-		if entry, ok := p.modelCache[userID]; ok && entry.expiresAt.After(now) {
+	if p.cache != nil {
+		if entry, ok := p.cache[userID]; ok && entry.expiresAt.After(now) {
 			p.mu.Unlock()
-			return entry.value, nil
+			return PrefsRow{LLMModel: entry.model, Persona: entry.persona, PersonaCust: entry.personaCust}, nil
 		}
 	}
 	p.mu.Unlock()
 
 	q := url.Values{}
-	q.Set("select", "llm_model")
+	q.Set("select", "llm_model,persona,persona_custom")
 	q.Set("user_id", "eq."+userID)
 
-	var rows []struct {
-		LLMModel string `json:"llm_model"`
-	}
+	var rows []PrefsRow
 	if err := p.DB.Get(ctx, "user_preferences", q, &rows); err != nil {
-		return "", err
+		return PrefsRow{}, err
 	}
-	value := ""
+	row := PrefsRow{}
 	if len(rows) > 0 {
-		value = rows[0].LLMModel
+		row = rows[0]
 	}
 
 	p.mu.Lock()
-	if p.modelCache == nil {
-		p.modelCache = make(map[string]modelCacheEntry)
+	if p.cache == nil {
+		p.cache = make(map[string]prefsCacheEntry)
 	}
-	p.modelCache[userID] = modelCacheEntry{value: value, expiresAt: now.Add(llmModelCacheTTL)}
+	p.cache[userID] = prefsCacheEntry{
+		model:       row.LLMModel,
+		persona:     row.Persona,
+		personaCust: row.PersonaCust,
+		expiresAt:   now.Add(prefsCacheTTL),
+	}
 	p.mu.Unlock()
 
-	return value, nil
+	return row, nil
+}
+
+func (p *Preferences) GetLLMModel(ctx context.Context, userID string) (string, error) {
+	row, err := p.loadRow(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return row.LLMModel, nil
 }
 
 func (p *Preferences) SetLLMModel(ctx context.Context, userID, model string) error {
@@ -75,14 +96,46 @@ func (p *Preferences) SetLLMModel(ctx context.Context, userID, model string) err
 	if err := p.DB.Upsert(ctx, "user_preferences", "user_id", body, nil); err != nil {
 		return err
 	}
-	p.invalidateLLMModelCache(userID)
+	p.invalidate(userID)
 	return nil
 }
 
-func (p *Preferences) invalidateLLMModelCache(userID string) {
+// GetPersona returns the user's persona id and optional custom prompt text.
+// Missing/empty values yield ("companion", "") as defaults.
+func (p *Preferences) GetPersona(ctx context.Context, userID string) (persona, personaCustom string, err error) {
+	row, err := p.loadRow(ctx, userID)
+	if err != nil {
+		return "companion", "", err
+	}
+	persona = strings.TrimSpace(row.Persona)
+	if persona == "" {
+		persona = "companion"
+	}
+	personaCustom = strings.TrimSpace(row.PersonaCust)
+	return persona, personaCustom, nil
+}
+
+func (p *Preferences) SetPersona(ctx context.Context, userID, persona, personaCustom string) error {
+	if p == nil || !p.Enabled || p.DB == nil {
+		return fmt.Errorf("preferences unavailable")
+	}
+	body := map[string]any{
+		"user_id":        userID,
+		"persona":        persona,
+		"persona_custom": personaCustom,
+		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := p.DB.Upsert(ctx, "user_preferences", "user_id", body, nil); err != nil {
+		return err
+	}
+	p.invalidate(userID)
+	return nil
+}
+
+func (p *Preferences) invalidate(userID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.modelCache != nil {
-		delete(p.modelCache, userID)
+	if p.cache != nil {
+		delete(p.cache, userID)
 	}
 }

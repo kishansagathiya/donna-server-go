@@ -95,7 +95,7 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
-	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm}
+	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
 	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker}
 	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
@@ -112,6 +112,7 @@ func main() {
 		Preferences:  preferencesStore,
 		Models:       cfg.LLMModels,
 		DefaultModel: cfg.LLMModel,
+		Personas:     cfg.Personas,
 	}
 	accountRoutes := r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,

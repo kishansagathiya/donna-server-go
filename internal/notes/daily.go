@@ -37,8 +37,9 @@ type DailyBriefing struct {
 }
 
 type DailyChecker struct {
-	Store *storage.Notes
-	LLM   *providers.LLM
+	Store         *storage.Notes
+	LLM           *providers.LLM
+	Conversations *storage.Conversations
 }
 
 func (dc *DailyChecker) Check(ctx context.Context, userID string) (DailyBriefing, error) {
@@ -63,8 +64,18 @@ func (dc *DailyChecker) Check(ctx context.Context, userID string) (DailyBriefing
 		return briefing, nil
 	}
 
+	// Pull recent conversation context (what the user has been talking about)
+	// so the plan reflects live priorities, not just captured notes — mirrors
+	// Steve's daily plan which builds from the recent transcript.
+	var recentTranscripts []string
+	if dc.Conversations != nil && dc.Conversations.Enabled {
+		if turns, err := dc.Conversations.RecentUserTurns(ctx, userID, 20); err == nil {
+			recentTranscripts = turns
+		}
+	}
+
 	if dc.LLM != nil && dc.LLM.APIKey != "" {
-		if llmBriefing, err := dc.checkWithLLM(ctx, notes, today); err == nil {
+		if llmBriefing, err := dc.checkWithLLM(ctx, notes, recentTranscripts, today); err == nil {
 			return llmBriefing, nil
 		} else {
 			log.Warn("daily notes LLM check failed, using fallback", map[string]any{
@@ -76,7 +87,7 @@ func (dc *DailyChecker) Check(ctx context.Context, userID string) (DailyBriefing
 	return dc.fallbackBriefing(notes, today), nil
 }
 
-func (dc *DailyChecker) checkWithLLM(ctx context.Context, notes []storage.NoteSummary, today time.Time) (DailyBriefing, error) {
+func (dc *DailyChecker) checkWithLLM(ctx context.Context, notes []storage.NoteSummary, recentTranscripts []string, today time.Time) (DailyBriefing, error) {
 	todayStr := today.Format("Monday, January 2, 2006")
 	noteLines := make([]string, 0, len(notes))
 	noteByID := make(map[string]storage.NoteSummary, len(notes))
@@ -117,11 +128,12 @@ func (dc *DailyChecker) checkWithLLM(ctx context.Context, notes []storage.NoteSu
 		"- Mark outdated notes that reference past dates, finished projects, or expired context",
 		"- A note can appear in tasks OR outdated, not both",
 		"- Use exact note_id values from the input",
+		"- Recent conversation context gives hints about current priorities; use it to weigh tasks, not to invent new note_ids",
 	}, "\n")
 
 	messages := []providers.ChatMessage{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: "Notes to review:\n" + strings.Join(noteLines, "\n")},
+		{Role: "user", Content: dc.buildLLMUserMessage(notes, noteLines, recentTranscripts)},
 	}
 
 	raw, err := dc.LLM.CompleteOnce(ctx, messages)
@@ -309,4 +321,19 @@ func truncateForLLM(text string, max int) string {
 		return text
 	}
 	return text[:max] + "..."
+}
+
+// buildLLMUserMessage assembles the user turn for the daily-plan LLM call:
+// the note list plus, when available, a compact view of recent conversation
+// turns so the plan reflects live priorities.
+func (dc *DailyChecker) buildLLMUserMessage(_ []storage.NoteSummary, noteLines []string, recentTranscripts []string) string {
+	parts := []string{"Notes to review:\n" + strings.Join(noteLines, "\n")}
+	if len(recentTranscripts) > 0 {
+		var trimmed []string
+		for _, t := range recentTranscripts {
+			trimmed = append(trimmed, "- "+truncateForLLM(t, 200))
+		}
+		parts = append(parts, "Recent conversations (hints, not tasks):\n"+strings.Join(trimmed, "\n"))
+	}
+	return strings.Join(parts, "\n\n")
 }

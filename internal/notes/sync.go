@@ -25,6 +25,12 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	if s.Queue != nil {
 		s.Queue.Enqueue(noteID)
 	}
+
+	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
+		if _, err := s.Store.SetTagsForNote(ctx, userID, noteID, tags); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -66,6 +72,11 @@ func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDat
 	}
 	if s.Queue != nil {
 		s.Queue.Enqueue(note.ID)
+	}
+	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
+		if _, err := s.Store.SetTagsForNote(ctx, userID, note.ID, tags); err != nil {
+			return storage.Note{}, err
+		}
 	}
 	return note, nil
 }

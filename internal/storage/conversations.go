@@ -502,6 +502,65 @@ func (c *Conversations) setTitleIfEmpty(ctx context.Context, conversationID, tit
 	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
 }
 
+// RecentUserTurns returns the most recent user transcripts across all of the
+// user's conversations (newest first), capped at limit. Used to give the daily
+// plan LLM context about what the user has been talking about lately — mirroring
+// Steve's daily plan which pulls the recent transcript.
+func (c *Conversations) RecentUserTurns(ctx context.Context, userID string, limit int) ([]string, error) {
+	if !c.Enabled {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Two-step via PostgREST: latest conversations for the user, then their turns.
+	convQ := url.Values{}
+	convQ.Set("select", "id")
+	convQ.Set("user_id", "eq."+userID)
+	convQ.Set("order", "created_at.desc")
+	convQ.Set("limit", "10")
+
+	var convRows []struct {
+		ID string `json:"id"`
+	}
+	if err := c.DB.Get(ctx, "conversations", convQ, &convRows); err != nil {
+		return nil, err
+	}
+	if len(convRows) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, 0, len(convRows))
+	for _, r := range convRows {
+		ids = append(ids, r.ID)
+	}
+
+	turnQ := url.Values{}
+	turnQ.Set("select", "user_transcript,created_at")
+	turnQ.Set("conversation_id", "in.("+strings.Join(ids, ",")+")")
+	turnQ.Set("order", "created_at.desc")
+	turnQ.Set("limit", fmt.Sprintf("%d", limit))
+
+	var rows []struct {
+		UserTranscript string `json:"user_transcript"`
+		CreatedAt      string `json:"created_at"`
+	}
+	if err := c.DB.Get(ctx, "conversation_turns", turnQ, &rows); err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		t := strings.TrimSpace(r.UserTranscript)
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (c *Conversations) ensureTitleFromTurns(ctx context.Context, conversationID string) error {
 	q := url.Values{}
 	q.Set("select", "title,channel,created_at")

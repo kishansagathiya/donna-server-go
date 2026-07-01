@@ -18,6 +18,7 @@ type Handler struct {
 	Preferences  *storage.Preferences
 	Models       []string
 	DefaultModel string
+	Personas     []string
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,33 +49,97 @@ func (h *Handler) getPreferences(w http.ResponseWriter, r *http.Request, userID 
 	if !h.isAllowedModel(model) {
 		model = h.DefaultModel
 	}
+	persona, personaCustom, _ := h.Preferences.GetPersona(r.Context(), userID)
+	if persona == "" {
+		persona = "companion"
+	}
+	personaCustom = strings.TrimSpace(personaCustom)
+	isCustom := persona == "custom"
+	// Only return the custom text when the user is on the custom persona.
+	customOut := personaCustom
+	if !isCustom {
+		customOut = ""
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"llm_model":        model,
-		"available_models": h.Models,
+		"llm_model":            model,
+		"available_models":     h.Models,
+		"persona":              persona,
+		"persona_custom":       customOut,
+		"available_personas":   h.Personas,
 	})
 }
 
 func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, userID string) {
 	var body struct {
-		LLMModel string `json:"llm_model"`
+		LLMModel     string `json:"llm_model"`
+		Persona      string `json:"persona"`
+		PersonaCustom *string `json:"persona_custom"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
 		return
 	}
+
+	// Persona update (optional — only when the persona field is present).
+	persona := strings.TrimSpace(body.Persona)
+	if persona != "" {
+		if !h.isAllowedPersona(persona) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":              "invalid_persona",
+				"available_personas": h.Personas,
+			})
+			return
+		}
+		personaCustom := ""
+		if body.PersonaCustom != nil {
+			personaCustom = strings.TrimSpace(*body.PersonaCustom)
+		}
+		if len(personaCustom) > 4000 {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "persona_custom_too_long"})
+			return
+		}
+		if err := h.Preferences.SetPersona(r.Context(), userID, persona, personaCustom); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_failed", "message": err.Error()})
+			return
+		}
+	}
+
+	// Model update (optional — only when llm_model is present).
 	body.LLMModel = strings.TrimSpace(body.LLMModel)
-	if !h.isAllowedModel(body.LLMModel) {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":            "invalid_model",
-			"available_models": h.Models,
-		})
-		return
+	if body.LLMModel != "" {
+		if !h.isAllowedModel(body.LLMModel) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":            "invalid_model",
+				"available_models": h.Models,
+			})
+			return
+		}
+		if err := h.Preferences.SetLLMModel(r.Context(), userID, body.LLMModel); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_failed", "message": err.Error()})
+			return
+		}
 	}
-	if err := h.Preferences.SetLLMModel(r.Context(), userID, body.LLMModel); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_failed", "message": err.Error()})
-		return
+
+	resp := map[string]any{}
+	if body.LLMModel != "" {
+		resp["llm_model"] = body.LLMModel
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"llm_model": body.LLMModel})
+	if persona != "" {
+		resp["persona"] = persona
+		if body.PersonaCustom != nil {
+			resp["persona_custom"] = strings.TrimSpace(*body.PersonaCustom)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) isAllowedPersona(persona string) bool {
+	for _, allowed := range h.Personas {
+		if persona == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) isAllowedModel(model string) bool {

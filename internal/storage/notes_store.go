@@ -19,19 +19,23 @@ type Note struct {
 	Preview          string  `json:"preview"`
 	IsImportant      bool    `json:"is_important"`
 	IsUrgent         bool    `json:"is_urgent"`
+	Keywords         []string `json:"keywords"`
+	Category         *string `json:"category"`
 	UserLastModified *string `json:"user_last_modified"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
 }
 
 type NoteSummary struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Preview     string `json:"preview"`
-	NoteDate    string `json:"note_date"`
-	IsImportant bool   `json:"is_important"`
-	IsUrgent    bool   `json:"is_urgent"`
-	SourceType  string `json:"source_type"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Preview     string   `json:"preview"`
+	NoteDate    string   `json:"note_date"`
+	IsImportant bool     `json:"is_important"`
+	IsUrgent    bool     `json:"is_urgent"`
+	SourceType  string   `json:"source_type"`
+	Keywords    []string `json:"keywords"`
+	Category    *string  `json:"category"`
 }
 
 type NoteFlags struct {
@@ -53,11 +57,11 @@ type Notes struct {
 }
 
 func (n *Notes) selectColumns() string {
-	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,user_last_modified,created_at,updated_at"
+	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at"
 }
 
 func (n *Notes) summaryColumns() string {
-	return "id,title,preview,note_date,is_important,is_urgent,source_type"
+	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category"
 }
 
 func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content string, opts struct {
@@ -187,6 +191,26 @@ func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int
 	q.Set("order", "note_date.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("offset", fmt.Sprintf("%d", offset))
+
+	var rows []NoteSummary
+	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []string, limit int) ([]NoteSummary, error) {
+	if len(noteIDs) == 0 {
+		return nil, nil
+	}
+	q := url.Values{}
+	q.Set("select", n.summaryColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("id", "in."+strings.Join(noteIDs, ","))
+	q.Set("order", "note_date.desc")
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
 
 	var rows []NoteSummary
 	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
@@ -332,6 +356,12 @@ func (n *Notes) UpdateNoteFlags(ctx context.Context, userID, noteID string, flag
 }
 
 func (n *Notes) ApplyIndexerFlags(ctx context.Context, noteID string, urgent, important bool) error {
+	return n.ApplyIndexerMeta(ctx, noteID, urgent, important, nil, "")
+}
+
+// ApplyIndexerMeta persists the indexer's flags + keywords/category for a note,
+// but only when the user has not manually edited it (user_last_modified is null).
+func (n *Notes) ApplyIndexerMeta(ctx context.Context, noteID string, urgent, important bool, keywords []string, category string) error {
 	q := url.Values{}
 	q.Set("id", "eq."+noteID)
 	q.Set("user_last_modified", "is.null")
@@ -340,6 +370,12 @@ func (n *Notes) ApplyIndexerFlags(ctx context.Context, noteID string, urgent, im
 		"is_urgent":    urgent,
 		"is_important": important,
 		"updated_at":   time.Now().UTC().Format(time.RFC3339),
+	}
+	if keywords != nil {
+		body["keywords"] = keywords
+	}
+	if category != "" {
+		body["category"] = category
 	}
 	return n.DB.Patch(ctx, "notes", q, body)
 }
