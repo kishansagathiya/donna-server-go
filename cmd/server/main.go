@@ -121,7 +121,7 @@ func main() {
 	accountRoutes.Delete("/account", accountHandler.ServeHTTP)
 	accountRoutes.Get("/account/export", accountHandler.Export)
 
-	chatHandler := &chat.Handler{Engine: engine, Conversations: convStore}
+	chatHandler := &chat.Handler{Engine: engine, Conversations: convStore, Notes: noteSync}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
@@ -136,6 +136,7 @@ func main() {
 		Engine:        engine,
 		Conversations: convStore,
 		Queue:         compileQueue,
+		Notes:         noteSync,
 	}
 	r.Get("/voice", voiceHandler.ServeHTTP)
 

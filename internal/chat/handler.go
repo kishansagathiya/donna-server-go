@@ -12,6 +12,7 @@ import (
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
@@ -21,6 +22,7 @@ import (
 type Handler struct {
 	Engine        *pipeline.Engine
 	Conversations *storage.Conversations
+	Notes         *notes.Sync
 }
 
 type chatRequest struct {
@@ -112,11 +114,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.persistFacts(userID, sessionID, result.Transcript)
-	h.persistTurn(userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped)
+	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped, mode)
 
+	reply := result.ReplyText
+	if mode.IsNotes() {
+		reply = ""
+	}
 	writeJSON(w, http.StatusOK, chatResponse{
-		Reply:     result.ReplyText,
+		Reply:     reply,
 		SessionID: sessionID,
 		Timings:   result.Timings,
 	})
@@ -171,23 +176,51 @@ func (h *Handler) streamReply(
 		return
 	}
 
-	h.persistFacts(userID, sessionID, result.Transcript)
-	h.persistTurn(userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped)
+	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped, mode)
 
+	reply := result.ReplyText
 	if mode.IsNotes() {
-		writeSSE("done", mustJSON(chatResponse{
-			Reply:     "",
-			SessionID: sessionID,
-			Timings:   result.Timings,
-		}))
-		return
+		reply = ""
 	}
-
 	writeSSE("done", mustJSON(chatResponse{
-		Reply:     result.ReplyText,
+		Reply:     reply,
 		SessionID: sessionID,
 		Timings:   result.Timings,
 	}))
+}
+
+func (h *Handler) persistAfterTurn(
+	ctx context.Context,
+	userID, sessionID, userMessage, assistantMessage string,
+	history []providers.ChatMessage,
+	timings protocol.TurnTimings,
+	skipped bool,
+	mode pipeline.InteractionMode,
+) {
+	if skipped {
+		return
+	}
+	if mode.IsNotes() {
+		h.persistNote(ctx, userID, userMessage)
+		return
+	}
+	h.persistFacts(userID, sessionID, userMessage)
+	h.persistTurn(userID, sessionID, userMessage, assistantMessage, history, timings, skipped)
+}
+
+func (h *Handler) persistNote(ctx context.Context, userID, content string) {
+	if h.Notes == nil || strings.TrimSpace(content) == "" {
+		return
+	}
+	go func() {
+		bg := context.Background()
+		if _, err := h.Notes.CreateManual(bg, userID, strings.TrimSpace(content), nil); err != nil {
+			log.Warn("failed to create note from chat", map[string]any{
+				"userId": log.ShortID(userID),
+				"error":  err.Error(),
+			})
+		}
+	}()
 }
 
 func (h *Handler) persistTurn(

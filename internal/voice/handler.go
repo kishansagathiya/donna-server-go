@@ -10,6 +10,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -20,6 +21,7 @@ type Handler struct {
 	Engine        *pipeline.Engine
 	Conversations *storage.Conversations
 	Queue         *knowledge.Queue
+	Notes         *notes.Sync
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +66,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				userID = verified.UserID
 			}
 
-			session = NewSession(conn, h.Config, h.Engine, h.Conversations, h.Queue, userID)
+			session = NewSession(conn, h.Config, h.Engine, h.Conversations, h.Queue, h.Notes, userID)
 			log.Print("websocket connected", map[string]any{"userId": userID})
 		})
 	}

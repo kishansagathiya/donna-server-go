@@ -12,6 +12,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
@@ -30,6 +31,7 @@ type Session struct {
 	engine         *pipeline.Engine
 	conversations  *storage.Conversations
 	queue          *knowledge.Queue
+	notes          *notes.Sync
 	conn           *websocket.Conn
 	sessionID      string
 	userID         string
@@ -48,12 +50,13 @@ type Session struct {
 	writeMu        sync.Mutex
 }
 
-func NewSession(conn *websocket.Conn, cfg *config.Config, engine *pipeline.Engine, conversations *storage.Conversations, queue *knowledge.Queue, userID string) *Session {
+func NewSession(conn *websocket.Conn, cfg *config.Config, engine *pipeline.Engine, conversations *storage.Conversations, queue *knowledge.Queue, noteSync *notes.Sync, userID string) *Session {
 	s := &Session{
 		cfg:           cfg,
 		engine:        engine,
 		conversations: conversations,
 		queue:         queue,
+		notes:         noteSync,
 		conn:          conn,
 		sessionID:     uuid.NewString(),
 		userID:        userID,
@@ -334,33 +337,47 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 	s.sendPhase(protocol.TurnPhaseIdle)
 
 	if result.Transcript != "" && !result.Skipped && !result.UsedRetry {
-		if s.engine.KB != nil {
-			knowledge.PersistLiveFactsAsync(s.engine.KB, knowledge.LiveFactsInput{
-				UserID:         s.userID,
-				Transcript:     result.Transcript,
-				ConversationID: s.conversationID,
-				TurnIndex:      s.turnIndex,
-			})
-		}
-
-		if err := s.ensureConversation(ctx); err == nil && s.conversationID != "" {
-			turnIndex := s.turnIndex
-			s.turnIndex++
-
-			saveInput := storage.SaveTurnInput{
-				ConversationID:      s.conversationID,
-				UserID:              s.userID,
-				TurnIndex:           turnIndex,
-				UserTranscript:      result.Transcript,
-				AssistantTranscript: result.ReplyText,
-				UserWav:             wavData,
-				Timings:             result.Timings,
+		if s.mode.IsNotes() {
+			if s.notes != nil {
+				content := result.Transcript
+				go func() {
+					if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil); err != nil {
+						log.Warn("failed to create note from voice", map[string]any{
+							"session": log.ShortID(s.sessionID),
+							"error":   err.Error(),
+						})
+					}
+				}()
 			}
-			if result.AssistantAudio != nil {
-				saveInput.AssistantAudio = result.AssistantAudio.Data
-				saveInput.AssistantFormat = result.AssistantAudio.Format
+		} else {
+			if s.engine.KB != nil {
+				knowledge.PersistLiveFactsAsync(s.engine.KB, knowledge.LiveFactsInput{
+					UserID:         s.userID,
+					Transcript:     result.Transcript,
+					ConversationID: s.conversationID,
+					TurnIndex:      s.turnIndex,
+				})
 			}
-			s.conversations.PersistTurnAsync(saveInput)
+
+			if err := s.ensureConversation(ctx); err == nil && s.conversationID != "" {
+				turnIndex := s.turnIndex
+				s.turnIndex++
+
+				saveInput := storage.SaveTurnInput{
+					ConversationID:      s.conversationID,
+					UserID:              s.userID,
+					TurnIndex:           turnIndex,
+					UserTranscript:      result.Transcript,
+					AssistantTranscript: result.ReplyText,
+					UserWav:             wavData,
+					Timings:             result.Timings,
+				}
+				if result.AssistantAudio != nil {
+					saveInput.AssistantAudio = result.AssistantAudio.Data
+					saveInput.AssistantFormat = result.AssistantAudio.Format
+				}
+				s.conversations.PersistTurnAsync(saveInput)
+			}
 		}
 	}
 
