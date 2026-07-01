@@ -46,7 +46,7 @@ tags:
   - name: Knowledge
     description: Knowledge base ingest and formats
   - name: Notes
-    description: User notes (searchable; web-only edit/browse)
+    description: User notes (searchable; web-only create/delete/full edit)
   - name: Account
     description: Account management
   - name: Voice
@@ -209,17 +209,11 @@ paths:
     get:
       tags: [Notes]
       summary: List recent notes
-      description: Web client only. Requires `X-Donna-Client: web` header.
+      description: List recent note summaries. Available to web and iOS clients.
       operationId: listRecentNotes
       security:
         - bearerAuth: []
       parameters:
-        - name: X-Donna-Client
-          in: header
-          required: true
-          schema:
-            type: string
-            enum: [web]
         - name: limit
           in: query
           schema:
@@ -239,12 +233,6 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/NoteSummary"
-        "403":
-          description: Web client header required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
 
   /notes:
     post:
@@ -312,17 +300,13 @@ paths:
     patch:
       tags: [Notes]
       summary: Update note
-      description: Web client only. Edit content, date, and urgency/importance flags.
+      description: |
+        Edit content, date, and urgency/importance flags.
+        Available to web and iOS clients.
       operationId: updateNote
       security:
         - bearerAuth: []
       parameters:
-        - name: X-Donna-Client
-          in: header
-          required: true
-          schema:
-            type: string
-            enum: [web]
         - name: id
           in: path
           required: true
