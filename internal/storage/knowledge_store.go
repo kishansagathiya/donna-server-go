@@ -45,9 +45,9 @@ type UserProfile struct {
 const kbFactSelect = "id,user_id,fact,entity_name,topic,source_id,active,created_at"
 
 type ConversationTurn struct {
-	TurnIndex            int    `json:"turn_index"`
-	UserTranscript       string `json:"user_transcript"`
-	AssistantTranscript  string `json:"assistant_transcript"`
+	TurnIndex           int    `json:"turn_index"`
+	UserTranscript      string `json:"user_transcript"`
+	AssistantTranscript string `json:"assistant_transcript"`
 }
 
 type NewFactInput struct {
@@ -609,6 +609,69 @@ func (k *Knowledge) GetSourceByID(ctx context.Context, sourceID string) (KbSourc
 		return KbSource{}, fmt.Errorf("source not found")
 	}
 	return rows[0], nil
+}
+
+// ConversationAudioBucket is the storage bucket holding the user's recorded
+// speech for talk-mode voice turns — the same audio the iOS/web mic button
+// captures when chatting with Donna. Layout: `<userID>/<conversationID>/<turnIndex>/user.wav`.
+const ConversationAudioBucket = "conversation-audio"
+
+// PathOfTalkUserAudio returns the storage object key for the user's recorded
+// speech for a single talk-mode voice turn. Returns "" when source lacks the
+// conversation/turn pointer (text channel rows, partial imports, etc).
+func PathOfTalkUserAudio(source KbSource) string {
+	if source.ConversationID == nil || strings.TrimSpace(*source.ConversationID) == "" {
+		return ""
+	}
+	if source.TurnIndex == nil {
+		return ""
+	}
+	if strings.TrimSpace(source.UserID) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s/%d/user.wav", source.UserID, *source.ConversationID, *source.TurnIndex)
+}
+
+// SignedTalkUserAudioURL fetches the kb_sources row for the given note's
+// source_id and returns a short-lived signed URL for the user's recorded
+// speech in the conversation-audio bucket. Returns "" (no error) when the
+// note has no source, the source isn't a voice turn, or there's no audio
+// pointer stored — callers fall back to text-only rendering.
+const talkAudioSignedURLTTL = 30 * time.Minute
+
+func (k *Knowledge) SignedTalkUserAudioURL(ctx context.Context, note Note) string {
+	if k == nil || k.DB == nil || !k.DB.Enabled() {
+		return ""
+	}
+	if note.SourceType != "voice_turn" || note.SourceID == nil || strings.TrimSpace(*note.SourceID) == "" {
+		return ""
+	}
+	source, err := k.GetSourceByID(ctx, *note.SourceID)
+	if err != nil {
+		log.Warn("failed to load kb_source for note audio", map[string]any{
+			"noteId":   note.ID,
+			"sourceId": *note.SourceID,
+			"error":    err.Error(),
+		})
+		return ""
+	}
+	if source.SourceType != "voice_turn" {
+		return ""
+	}
+	objectPath := PathOfTalkUserAudio(source)
+	if objectPath == "" {
+		return ""
+	}
+	signed, err := k.DB.CreateSignedURL(ctx, ConversationAudioBucket, objectPath, talkAudioSignedURLTTL)
+	if err != nil {
+		log.Warn("failed to sign talk user audio url", map[string]any{
+			"noteId":    note.ID,
+			"audioPath": objectPath,
+			"error":     err.Error(),
+		})
+		return ""
+	}
+	return signed
 }
 
 func (k *Knowledge) IsSourceCompiled(ctx context.Context, sourceID string) (bool, error) {

@@ -18,8 +18,8 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
 	appmiddleware "github.com/kishansagathiya/donna/donna-server-go/internal/middleware"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
@@ -96,7 +96,7 @@ func main() {
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
 	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
-	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker}
+	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker, KB: kbStore}
 	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
@@ -107,8 +107,8 @@ func main() {
 	memory.RegisterRoutes(r, authMiddleware, memoryHandler)
 
 	accountHandler := &account.Handler{
-		Deleter: &account.Deleter{DB: supa},
-		Exporter: &account.Exporter{DB: supa},
+		Deleter:      &account.Deleter{DB: supa},
+		Exporter:     &account.Exporter{DB: supa},
 		Preferences:  preferencesStore,
 		Models:       cfg.LLMModels,
 		DefaultModel: cfg.LLMModel,

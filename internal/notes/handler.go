@@ -17,6 +17,10 @@ type Handler struct {
 	Store *storage.Notes
 	Sync  *Sync
 	Daily *DailyChecker
+	// KB resolves talk-derived notes' audio (source_type = "voice_turn" with
+	// a source_id) by signing the conversation-audio user.wav. Nil when
+	// persistence is disabled; clients just get a text-only note.
+	KB *storage.Knowledge
 }
 
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
@@ -127,10 +131,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "note_not_found"})
 		return
 	}
-	// Sign the dictation URL on read so clients can stream the audio without us
-	// proxying bytes. Empty string => no audio (typed note or pre-migration note);
-	// clients hide the play button in that case.
-	note.AudioURL = h.Store.SignedAudioURL(r.Context(), note)
+	// Resolve a playable audio URL: notes-mode dictations store audio in the
+	// note-audio bucket (note.audio_path set); talk-derived notes point at a
+	// kb_sources row whose conversation/turn we sign in conversation-audio.
+	// We try both — one returns a non-empty URL, the other returns "".
+	audioURL := h.Store.SignedAudioURL(r.Context(), note)
+	if audioURL == "" && note.SourceType == "voice_turn" && h.KB != nil {
+		audioURL = h.KB.SignedTalkUserAudioURL(r.Context(), note)
+	}
+	note.AudioURL = audioURL
 	writeJSON(w, http.StatusOK, note)
 }
 
