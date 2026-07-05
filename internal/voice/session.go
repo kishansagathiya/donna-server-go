@@ -260,11 +260,11 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 
 	if !quality.ShouldProcess {
 		log.Print("turn skipped — audio quality gate", map[string]any{
-			"session":      log.ShortID(s.sessionID),
-			"reason":       quality.Reason,
+			"session":       log.ShortID(s.sessionID),
+			"reason":        quality.Reason,
 			"approxSeconds": approxSeconds,
-			"avgRms":       quality.AvgRms,
-			"peakRms":      quality.PeakRms,
+			"avgRms":        quality.AvgRms,
+			"peakRms":       quality.PeakRms,
 		})
 		skipped := true
 		_ = s.send(protocol.TurnDone(protocol.EmptyTurnTimings(), skipped))
@@ -340,8 +340,15 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		if s.mode.IsNotes() {
 			if s.notes != nil {
 				content := result.Transcript
+				// Hold a local copy of the wav bytes for the goroutine so the
+				// outer `wavData` slice isn't reused before the upload runs.
+				audioBytes := wavData
 				go func() {
-					if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil); err != nil {
+					audio := &storage.NoteAudioInput{
+						WAV:  audioBytes,
+						Mime: "audio/wav",
+					}
+					if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil, audio); err != nil {
 						log.Warn("failed to create note from voice", map[string]any{
 							"session": log.ShortID(s.sessionID),
 							"error":   err.Error(),

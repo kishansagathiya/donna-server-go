@@ -33,8 +33,8 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
-	Reply     string              `json:"reply"`
-	SessionID string              `json:"session_id"`
+	Reply     string               `json:"reply"`
+	SessionID string               `json:"session_id"`
 	Timings   protocol.TurnTimings `json:"timings"`
 }
 
@@ -214,7 +214,7 @@ func (h *Handler) persistNote(ctx context.Context, userID, content string) {
 	}
 	go func() {
 		bg := context.Background()
-		if _, err := h.Notes.CreateManual(bg, userID, strings.TrimSpace(content), nil); err != nil {
+		if _, err := h.Notes.CreateManual(bg, userID, strings.TrimSpace(content), nil, nil); err != nil {
 			log.Warn("failed to create note from chat", map[string]any{
 				"userId": log.ShortID(userID),
 				"error":  err.Error(),

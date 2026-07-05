@@ -14,9 +14,9 @@ import (
 )
 
 type Handler struct {
-	Store  *storage.Notes
-	Sync   *Sync
-	Daily  *DailyChecker
+	Store *storage.Notes
+	Sync  *Sync
+	Daily *DailyChecker
 }
 
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +127,10 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "note_not_found"})
 		return
 	}
+	// Sign the dictation URL on read so clients can stream the audio without us
+	// proxying bytes. Empty string => no audio (typed note or pre-migration note);
+	// clients hide the play button in that case.
+	note.AudioURL = h.Store.SignedAudioURL(r.Context(), note)
 	writeJSON(w, http.StatusOK, note)
 }
 
@@ -164,7 +168,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		noteDate = &parsed
 	}
 
-	note, err := h.Sync.CreateManual(r.Context(), userID, strings.TrimSpace(body.Content), noteDate)
+	note, err := h.Sync.CreateManual(r.Context(), userID, strings.TrimSpace(body.Content), noteDate, nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create_failed", "message": err.Error()})
 		return

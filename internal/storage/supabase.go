@@ -417,6 +417,71 @@ func (s *Supabase) DownloadStorage(ctx context.Context, bucket, path string) ([]
 	return io.ReadAll(res.Body)
 }
 
+// StorageBucketURLOpts configures a generated storage URL.
+type StorageBucketURLOpts struct {
+	Expires time.Duration
+}
+
+// CreateSignedURL issues a Supabase Storage `sign` request for the given object
+// and returns a fully-qualified, time-limited download URL. The bucket path is
+// the object key (may contain `/`); it is path-escaped segment-wise. expiresIn
+// is clamped to >=1s. Returns "" and no error if storage is unavailable, so
+// callers can treat missing audio as a soft skip.
+func (s *Supabase) CreateSignedURL(ctx context.Context, bucket, path string, expiresIn time.Duration) (string, error) {
+	if !s.Enabled() {
+		return "", nil
+	}
+	if expiresIn <= 0 {
+		expiresIn = time.Minute
+	}
+
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/sign/%s/%s", s.URL, bucket, objectPath)
+
+	body, err := json.Marshal(map[string]any{"expiresIn": int(expiresIn.Seconds())})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return "", fmt.Errorf("storage sign %s/%s %d: %s", bucket, path, res.StatusCode, string(raw))
+	}
+
+	var out struct {
+		SignedURL string `json:"signedURL"`
+		W_signed  string `json:"signedUrl"` // some Supabase versions return lower-camel
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	signed := out.SignedURL
+	if signed == "" {
+		signed = out.W_signed
+	}
+	if signed == "" {
+		return "", fmt.Errorf("storage sign %s/%s: empty signedURL", bucket, path)
+	}
+	if strings.HasPrefix(signed, "http://") || strings.HasPrefix(signed, "https://") {
+		return signed, nil
+	}
+	return s.URL + signed, nil
+}
+
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
 	objectPath := url.PathEscape(path)
 	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")

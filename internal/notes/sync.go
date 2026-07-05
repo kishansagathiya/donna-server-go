@@ -62,11 +62,15 @@ func (s *Sync) FromVoiceSources(ctx context.Context, userID string, sources []st
 	return nil
 }
 
-func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDate *time.Time) (storage.Note, error) {
-	note, err := s.Store.CreateNote(ctx, userID, "manual", content, struct {
-		SourceID *string
-		NoteDate *time.Time
-	}{NoteDate: noteDate})
+// CreateManual commits a user-authored note from any channel: typed via the
+// Notes tab, the chat `notes` mode shortcut, or dictated over the /voice
+// WebSocket. audio is non-nil only for the voice-dictation flow; for typed
+// channels it stays nil so the row remains a plain text note.
+func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDate *time.Time, audio *storage.NoteAudioInput) (storage.Note, error) {
+	note, err := s.Store.CreateNote(ctx, userID, "manual", content, storage.CreateNoteOptions{
+		NoteDate: noteDate,
+		Audio:    audio,
+	})
 	if err != nil {
 		return storage.Note{}, err
 	}

@@ -6,24 +6,45 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 )
 
+// NoteAudioBucket is the Supabase storage bucket where dictated note audio
+// (16 kHz mono 16-bit WAV, RIFF-wrapped by the voice session) is uploaded.
+const NoteAudioBucket = "note-audio"
+
 type Note struct {
-	ID               string  `json:"id"`
-	UserID           string  `json:"user_id"`
-	SourceID         *string `json:"source_id"`
-	SourceType       string  `json:"source_type"`
-	NoteDate         string  `json:"note_date"`
-	Title            string  `json:"title"`
-	Content          string  `json:"content"`
-	Preview          string  `json:"preview"`
-	IsImportant      bool    `json:"is_important"`
-	IsUrgent         bool    `json:"is_urgent"`
+	ID               string   `json:"id"`
+	UserID           string   `json:"user_id"`
+	SourceID         *string  `json:"source_id"`
+	SourceType       string   `json:"source_type"`
+	NoteDate         string   `json:"note_date"`
+	Title            string   `json:"title"`
+	Content          string   `json:"content"`
+	Preview          string   `json:"preview"`
+	IsImportant      bool     `json:"is_important"`
+	IsUrgent         bool     `json:"is_urgent"`
 	Keywords         []string `json:"keywords"`
-	Category         *string `json:"category"`
-	UserLastModified *string `json:"user_last_modified"`
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	Category         *string  `json:"category"`
+	UserLastModified *string  `json:"user_last_modified"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
+	AudioPath        *string  `json:"audio_path,omitempty"`
+	AudioMime        *string  `json:"audio_mime,omitempty"`
+	// AudioURL is populated only on read by the notes handler (signed Supabase
+	// URL); it is never persisted and is empty on inserts/updates. Omitted from
+	// JSON when empty so the field disappears for notes without audio.
+	AudioURL string `json:"audio_url,omitempty"`
+}
+
+// HasAudio reports whether this note has a stored dictation we can play back.
+// Only notes whose source_type is "manual" (committed by the /voice `notes`
+// mode flow) ever have AudioPath set.
+func (n Note) HasAudio() bool {
+	return n.AudioPath != nil && strings.TrimSpace(*n.AudioPath) != ""
 }
 
 type NoteSummary struct {
@@ -36,6 +57,7 @@ type NoteSummary struct {
 	SourceType  string   `json:"source_type"`
 	Keywords    []string `json:"keywords"`
 	Category    *string  `json:"category"`
+	HasAudio    bool     `json:"has_audio"`
 }
 
 type NoteFlags struct {
@@ -43,9 +65,31 @@ type NoteFlags struct {
 	IsUrgent    *bool
 }
 
+// NoteAudioInput carries the dictation WAV bytes (RIFF-wrapped PCM16) to Attach
+// to a note. Mime defaults to audio/wav. Used only by the /voice `notes` mode
+// flow right now — text-created notes pass nil.
+type NoteAudioInput struct {
+	WAV  []byte
+	Mime string
+}
+
+// noteSummaryRow decodes the audio_path column from PostgREST and then folds
+// it into NoteSummary.HasAudio. We can't add audio_path to NoteSummary itself
+// (it'd leak the storage path to clients), so we decode into this wrapper.
+type noteSummaryRow struct {
+	NoteSummary
+	AudioPath *string `json:"audio_path"`
+}
+
+func (r noteSummaryRow) toSummary() NoteSummary {
+	s := r.NoteSummary
+	s.HasAudio = r.AudioPath != nil && strings.TrimSpace(*r.AudioPath) != ""
+	return s
+}
+
 type NoteUpdate struct {
-	Content   *string
-	NoteDate  *string
+	Content     *string
+	NoteDate    *string
 	IsImportant *bool
 	IsUrgent    *bool
 }
@@ -57,17 +101,23 @@ type Notes struct {
 }
 
 func (n *Notes) selectColumns() string {
-	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at"
+	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at,audio_path,audio_mime"
 }
 
 func (n *Notes) summaryColumns() string {
-	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category"
+	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category,audio_path"
 }
 
-func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content string, opts struct {
+// CreateNoteOptions configures a freshly-created note. Audio, when non-nil,
+// is uploaded to the note-audio bucket before the row is inserted so the stored
+// audio_path is consistent from the start. SourceID/NoteDate behave as before.
+type CreateNoteOptions struct {
 	SourceID *string
 	NoteDate *time.Time
-}) (Note, error) {
+	Audio    *NoteAudioInput
+}
+
+func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content string, opts CreateNoteOptions) (Note, error) {
 	title := noteTitle(content)
 	preview := notePreview(content)
 	noteDate := time.Now().UTC()
@@ -76,16 +126,40 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 	}
 
 	body := map[string]any{
-		"user_id":      userID,
-		"source_type":  sourceType,
-		"note_date":    noteDate.Format(time.RFC3339),
-		"title":        title,
-		"content":      content,
-		"preview":      preview,
-		"updated_at":   time.Now().UTC().Format(time.RFC3339),
+		"user_id":     userID,
+		"source_type": sourceType,
+		"note_date":   noteDate.Format(time.RFC3339),
+		"title":       title,
+		"content":     content,
+		"preview":     preview,
+		"updated_at":  time.Now().UTC().Format(time.RFC3339),
 	}
 	if opts.SourceID != nil {
 		body["source_id"] = *opts.SourceID
+	}
+
+	// Attach dictation audio, if provided. We upload first and only persist the
+	// path on success; an upload failure downgrades to a text-only note rather
+	// than failing the whole turn (the transcript is the source of truth).
+	if opts.Audio != nil && len(opts.Audio.WAV) > 0 {
+		mime := strings.TrimSpace(opts.Audio.Mime)
+		if mime == "" {
+			mime = "audio/wav"
+		}
+		ext := "wav"
+		if strings.Contains(mime, "mpeg") {
+			ext = "mp3"
+		}
+		objectPath := fmt.Sprintf("%s/%s.%s", userID, uuid.NewString(), ext)
+		if err := n.DB.UploadStorage(ctx, NoteAudioBucket, objectPath, mime, opts.Audio.WAV); err != nil {
+			log.Warn("note audio upload failed — saving transcript only", map[string]any{
+				"userId": log.ShortID(userID),
+				"error":  err.Error(),
+			})
+		} else {
+			body["audio_path"] = objectPath
+			body["audio_mime"] = mime
+		}
 	}
 
 	if emb := n.noteEmbedding(ctx, title, content, preview); emb != nil {
@@ -170,6 +244,28 @@ func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, e
 	return rows[0], nil
 }
 
+// SignedAudioURL returns a short-lived signed download URL for the note's
+// stored dictation, or "" when the note has no audio (typed/manual callers,
+// or older dictated notes pre-migration). Errors during signing are logged
+// and treated as no-audio so callers fall back to text-only gracefully.
+const noteAudioSignedURLTTL = 30 * time.Minute
+
+func (n *Notes) SignedAudioURL(ctx context.Context, note Note) string {
+	if !note.HasAudio() || n.DB == nil || !n.DB.Enabled() {
+		return ""
+	}
+	signed, err := n.DB.CreateSignedURL(ctx, NoteAudioBucket, *note.AudioPath, noteAudioSignedURLTTL)
+	if err != nil {
+		log.Warn("failed to sign note audio url", map[string]any{
+			"noteId":    note.ID,
+			"audioPath": *note.AudioPath,
+			"error":     err.Error(),
+		})
+		return ""
+	}
+	return signed
+}
+
 func (n *Notes) ListForDailyReview(ctx context.Context, userID string, limit int) ([]NoteSummary, error) {
 	q := url.Values{}
 	q.Set("select", n.summaryColumns())
@@ -177,11 +273,15 @@ func (n *Notes) ListForDailyReview(ctx context.Context, userID string, limit int
 	q.Set("order", "note_date.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 
-	var rows []NoteSummary
-	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+	var raw []noteSummaryRow
+	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]NoteSummary, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, r.toSummary())
+	}
+	return out, nil
 }
 
 func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int) ([]NoteSummary, error) {
@@ -192,11 +292,15 @@ func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("offset", fmt.Sprintf("%d", offset))
 
-	var rows []NoteSummary
-	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+	var raw []noteSummaryRow
+	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]NoteSummary, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, r.toSummary())
+	}
+	return out, nil
 }
 
 func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []string, limit int) ([]NoteSummary, error) {
@@ -212,11 +316,15 @@ func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []stri
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
 
-	var rows []NoteSummary
-	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+	var raw []noteSummaryRow
+	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]NoteSummary, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, r.toSummary())
+	}
+	return out, nil
 }
 
 func (n *Notes) ListQuadrant(ctx context.Context, userID string, urgent, important bool, limit int) ([]NoteSummary, error) {
@@ -228,11 +336,15 @@ func (n *Notes) ListQuadrant(ctx context.Context, userID string, urgent, importa
 	q.Set("order", "note_date.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 
-	var rows []NoteSummary
-	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+	var raw []noteSummaryRow
+	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]NoteSummary, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, r.toSummary())
+	}
+	return out, nil
 }
 
 func (n *Notes) SearchNotes(ctx context.Context, userID, query string, limit int) ([]NoteSummary, error) {
@@ -249,11 +361,15 @@ func (n *Notes) SearchNotes(ctx context.Context, userID, query string, limit int
 	q.Set("order", "note_date.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 
-	var rows []NoteSummary
-	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
+	var raw []noteSummaryRow
+	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	return rows, nil
+	out := make([]NoteSummary, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, r.toSummary())
+	}
+	return out, nil
 }
 
 type noteSearchRow struct {
@@ -315,7 +431,7 @@ func (n *Notes) RetrieveNoteSnippets(ctx context.Context, userID, transcript str
 
 func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update NoteUpdate) (Note, error) {
 	body := map[string]any{
-		"updated_at":          time.Now().UTC().Format(time.RFC3339),
+		"updated_at":         time.Now().UTC().Format(time.RFC3339),
 		"user_last_modified": time.Now().UTC().Format(time.RFC3339),
 	}
 	if update.Content != nil {
