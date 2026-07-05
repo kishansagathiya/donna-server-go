@@ -476,10 +476,24 @@ func (s *Supabase) CreateSignedURL(ctx context.Context, bucket, path string, exp
 	if signed == "" {
 		return "", fmt.Errorf("storage sign %s/%s: empty signedURL", bucket, path)
 	}
+	return resolveSignedStorageURL(s.URL, signed), nil
+}
+
+// resolveSignedStorageURL turns a Supabase storage sign response into a
+// fully-qualified download URL. Recent Supabase versions return a relative path
+// like "/object/sign/bucket/key?token=…" which must be served under /storage/v1.
+func resolveSignedStorageURL(baseURL, signed string) string {
 	if strings.HasPrefix(signed, "http://") || strings.HasPrefix(signed, "https://") {
-		return signed, nil
+		return signed
 	}
-	return s.URL + signed, nil
+	base := strings.TrimRight(baseURL, "/")
+	if !strings.HasPrefix(signed, "/") {
+		signed = "/" + signed
+	}
+	if strings.HasPrefix(signed, "/object/") && !strings.HasPrefix(signed, "/storage/v1/") {
+		return base + "/storage/v1" + signed
+	}
+	return base + signed
 }
 
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
