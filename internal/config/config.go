@@ -25,6 +25,7 @@ type Config struct {
 	ElevenLabsAPIKey       string
 	LLMModel               string
 	LLMModels              []string
+	VisionModel            string
 	STTModel               string
 	EmbeddingModel         string
 	SystemPrompt           string
@@ -79,6 +80,11 @@ func Load() (*Config, error) {
 		llmModels = append([]string{llmModel}, llmModels...)
 	}
 
+	visionModel := strings.TrimSpace(os.Getenv("DONNA_VISION_MODEL"))
+	if visionModel == "" {
+		visionModel = "z-ai/glm-4.6v"
+	}
+
 	sttModel := os.Getenv("DONNA_STT_MODEL")
 	if sttModel == "" {
 		sttModel = "mistralai/voxtral-mini-transcribe"
@@ -124,6 +130,7 @@ func Load() (*Config, error) {
 		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
 		LLMModel:               llmModel,
 		LLMModels:              llmModels,
+		VisionModel:            visionModel,
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,

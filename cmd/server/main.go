@@ -48,7 +48,7 @@ func main() {
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
-	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel)
+	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
 
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 
@@ -173,6 +173,7 @@ func main() {
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
+	log.Print(fmt.Sprintf("vision model: %s", cfg.VisionModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)
 	for _, ip := range lanAddresses() {

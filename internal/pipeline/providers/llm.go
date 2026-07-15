@@ -20,16 +20,21 @@ type ChatMessage struct {
 }
 
 type LLM struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey      string
+	Model       string
+	VisionModel string
+	Client      *http.Client
 }
 
-func NewLLM(apiKey, model string) *LLM {
+func NewLLM(apiKey, model, visionModel string) *LLM {
+	if visionModel == "" {
+		visionModel = model
+	}
 	return &LLM{
-		APIKey: apiKey,
-		Model:  model,
-		Client: &http.Client{Timeout: 120 * time.Second},
+		APIKey:      apiKey,
+		Model:       model,
+		VisionModel: visionModel,
+		Client:      &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -40,6 +45,13 @@ func (l *LLM) WithModel(model string) *LLM {
 	copy := *l
 	copy.Model = model
 	return &copy
+}
+
+func (l *LLM) visionModel() string {
+	if l.VisionModel != "" {
+		return l.VisionModel
+	}
+	return l.Model
 }
 
 func (l *LLM) headers() map[string]string {
@@ -169,7 +181,7 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 
 func (l *LLM) CompleteOnceVision(ctx context.Context, prompt, imageDataURL string) (string, error) {
 	body, err := json.Marshal(map[string]any{
-		"model": l.Model,
+		"model": l.visionModel(),
 		"messages": []map[string]any{
 			{
 				"role": "user",
