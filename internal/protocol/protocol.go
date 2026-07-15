@@ -20,6 +20,8 @@ const (
 type TurnTimings struct {
 	STTMs           int `json:"sttMs"`
 	AugmentMs       int `json:"augmentMs"`
+	PreferencesMs   int `json:"preferencesMs"`
+	PreLLMMs        int `json:"preLlmMs"`
 	LLMFirstTokenMs int `json:"llmFirstTokenMs"`
 	TTSFirstByteMs  int `json:"ttsFirstByteMs"`
 	TotalMs         int `json:"totalMs"`

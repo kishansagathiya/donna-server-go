@@ -20,16 +20,25 @@ type RouteDecision struct {
 // wins. When auto-routing is enabled and the user has no override, simple
 // prompts take the fast model and harder prompts take the strong/default model.
 func (e *Engine) resolveLLM(ctx context.Context, userID, userMessage string) (*providers.LLM, RouteDecision) {
+	preferredModel := ""
+	if e.Preferences != nil && userID != "" {
+		prefs, err := e.Preferences.GetChatPreferences(ctx, userID)
+		if err == nil {
+			preferredModel = prefs.LLMModel
+		}
+	}
+	return e.resolveLLMWithPreference(userID, userMessage, preferredModel)
+}
+
+func (e *Engine) resolveLLMWithPreference(userID, userMessage, preferredModel string) (*providers.LLM, RouteDecision) {
 	decision := RouteDecision{
 		Model:  e.LLM.Model,
 		Route:  "default",
 		Reason: "configured_default",
 	}
 
-	if e.Preferences != nil && userID != "" {
-		model, err := e.Preferences.GetLLMModel(ctx, userID)
-		if err == nil && strings.TrimSpace(model) != "" {
-			model = strings.TrimSpace(model)
+	if userID != "" {
+		if model := strings.TrimSpace(preferredModel); model != "" {
 			if e.isAllowedModel(model) {
 				decision = RouteDecision{
 					Model:  model,

@@ -32,6 +32,13 @@ type PrefsRow struct {
 	PersonaCust  string `json:"persona_custom"`
 }
 
+// GetChatPreferences returns the single preferences row used to configure a
+// chat turn. Callers that need both persona and model should use this instead
+// of resolving those fields separately so a cold cache only waits once.
+func (p *Preferences) GetChatPreferences(ctx context.Context, userID string) (PrefsRow, error) {
+	return p.loadRow(ctx, userID)
+}
+
 // loadRow fetches the user's preferences row with a 60s per-user cache.
 func (p *Preferences) loadRow(ctx context.Context, userID string) (PrefsRow, error) {
 	if p == nil || !p.Enabled || p.DB == nil {

@@ -3,10 +3,12 @@ package pipeline
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 type TextTurnCallbacks struct {
@@ -45,21 +47,47 @@ func (e *Engine) RunTextTurn(
 	}
 
 	phase(protocol.TurnPhaseGenerating)
-	augStart := time.Now()
-	// Retrieve memory and the user profile in parallel (the voice path already
-	// does this via loadTurnContext); running them sequentially here roughly
-	// doubled pre-LLM latency on the text chat hot path.
-	augmented, profileSummary := e.loadTurnContext(ctx, message, options.UserID, options.SessionID)
-	timings.AugmentMs = int(time.Since(augStart).Milliseconds())
+	preLLMStart := time.Now()
+	var (
+		augmented      TranscriptAugmentation
+		profileSummary string
+		prefs          storage.PrefsRow
+		augmentMs      int
+		preferencesMs  int
+		wg             sync.WaitGroup
+	)
 
-	systemPrompt := e.resolveSystemPrompt(ctx, options.UserID)
+	// Context retrieval and user preferences are independent. Start them
+	// together so a cold preferences cache does not add another database wait
+	// after memory/profile augmentation has completed.
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		start := time.Now()
+		augmented, profileSummary = e.loadTurnContext(ctx, message, options.UserID, options.SessionID)
+		augmentMs = int(time.Since(start).Milliseconds())
+	}()
+	go func() {
+		defer wg.Done()
+		start := time.Now()
+		if e.Preferences != nil && options.UserID != "" {
+			prefs, _ = e.Preferences.GetChatPreferences(ctx, options.UserID)
+		}
+		preferencesMs = int(time.Since(start).Milliseconds())
+	}()
+	wg.Wait()
+	timings.AugmentMs = augmentMs
+	timings.PreferencesMs = preferencesMs
+	timings.PreLLMMs = int(time.Since(preLLMStart).Milliseconds())
+
+	systemPrompt := e.resolveSystemPromptWithPreferences(prefs)
 	if profileSummary != "" {
 		systemPrompt = systemPrompt + "\n\nKnown about this user:\n" + profileSummary
 	}
 
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
 
-	llm, route := e.resolveLLM(ctx, options.UserID, message)
+	llm, route := e.resolveLLMWithPreference(options.UserID, message, prefs.LLMModel)
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true

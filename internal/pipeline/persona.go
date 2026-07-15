@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"strings"
+
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 // SharedQualityPolicy is appended to every persona's system prompt. It encodes
@@ -91,9 +93,13 @@ func (e *Engine) resolveSystemPrompt(ctx context.Context, userID string) string 
 	if e.Preferences == nil || userID == "" {
 		return applyPersona(base, "companion", "")
 	}
-	persona, custom, err := e.Preferences.GetPersona(ctx, userID)
+	prefs, err := e.Preferences.GetChatPreferences(ctx, userID)
 	if err != nil {
 		return applyPersona(base, "companion", "")
 	}
-	return applyPersona(base, persona, custom)
+	return e.resolveSystemPromptWithPreferences(prefs)
+}
+
+func (e *Engine) resolveSystemPromptWithPreferences(prefs storage.PrefsRow) string {
+	return applyPersona(e.Config.SystemPrompt, prefs.Persona, prefs.PersonaCust)
 }

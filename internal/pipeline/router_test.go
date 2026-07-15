@@ -1,6 +1,11 @@
 package pipeline
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+)
 
 func TestShouldUseFastModel_chitchatAndShort(t *testing.T) {
 	if !shouldUseFastModel("hey") {
@@ -23,5 +28,23 @@ func TestShouldUseFastModel_complexAndMemory(t *testing.T) {
 func TestCountWords(t *testing.T) {
 	if got := countWords("one two  three"); got != 3 {
 		t.Fatalf("got %d want 3", got)
+	}
+}
+
+func TestResolveLLMWithPreference_preservesExplicitModelSelection(t *testing.T) {
+	e := &Engine{
+		Config: &config.Config{
+			LLMModel:  "default-model",
+			LLMModels: []string{"default-model", "preferred-model"},
+		},
+		LLM: &providers.LLM{Model: "default-model"},
+	}
+
+	llm, route := e.resolveLLMWithPreference("user-1", "hello", " preferred-model ")
+	if llm.Model != "preferred-model" {
+		t.Fatalf("model = %q, want preferred-model", llm.Model)
+	}
+	if route.Route != "user" || route.Reason != "explicit_user_preference" {
+		t.Fatalf("route = %#v", route)
 	}
 }

@@ -3,6 +3,9 @@ package pipeline
 import (
 	"strings"
 	"testing"
+
+	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 func TestApplyPersona_eachPersonaHasDocumentedBehavior(t *testing.T) {
@@ -69,5 +72,16 @@ func TestApplyPersona_personasDiffer(t *testing.T) {
 	therapist := applyPersona("Base.", "therapist", "")
 	if boss == coach || boss == therapist || coach == therapist {
 		t.Fatal("persona prompts should differ")
+	}
+}
+
+func TestResolveSystemPromptWithPreferences_preservesPersona(t *testing.T) {
+	e := &Engine{Config: &config.Config{SystemPrompt: "Base."}}
+	got := e.resolveSystemPromptWithPreferences(storage.PrefsRow{Persona: "boss"})
+	if !strings.Contains(got, "direct, no-nonsense boss") {
+		t.Fatalf("missing selected persona: %q", got)
+	}
+	if !strings.Contains(got, "Base.") {
+		t.Fatalf("missing base prompt: %q", got)
 	}
 }
