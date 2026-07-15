@@ -47,6 +47,7 @@ type TurnOptions struct {
 	UserID    string
 	SessionID string
 	Mode      InteractionMode
+	WebSearch bool
 }
 
 type Engine struct {

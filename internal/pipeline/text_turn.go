@@ -92,7 +92,10 @@ func (e *Engine) RunTextTurn(
 	replyText := ""
 	firstToken := true
 
-	err := llm.StreamCompletion(ctx, messages, func(chunk string) error {
+	meta, err := llm.StreamCompletionWithOptions(ctx, messages, providers.ChatCompletionOptions{
+		WebSearch:           options.WebSearch,
+		WebSearchMaxResults: 3,
+	}, func(chunk string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -117,7 +120,30 @@ func (e *Engine) RunTextTurn(
 		Transcript: message,
 		ReplyText:  replyText,
 		Timings:    timings,
-		Citations:  augmented.Citations,
+		Citations:  append(augmented.Citations, webCitations(meta.WebCitations)...),
 		Route:      route,
 	}, nil
+}
+
+func webCitations(citations []providers.WebCitation) []MemoryCitation {
+	out := make([]MemoryCitation, 0, len(citations))
+	for _, citation := range citations {
+		text := strings.TrimSpace(citation.Title)
+		if text == "" {
+			text = strings.TrimSpace(citation.Content)
+		}
+		if text == "" {
+			text = strings.TrimSpace(citation.URL)
+		}
+		if text == "" {
+			continue
+		}
+		out = append(out, MemoryCitation{
+			Source: "web",
+			Text:   truncateCitationText(text),
+			URL:    strings.TrimSpace(citation.URL),
+			Title:  strings.TrimSpace(citation.Title),
+		})
+	}
+	return out
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -89,6 +90,19 @@ func TestToCitations_truncatesAndKeepsIDs(t *testing.T) {
 	}
 }
 
+func TestWebCitations(t *testing.T) {
+	got := webCitations([]providers.WebCitation{{
+		URL:   "https://example.com/story",
+		Title: "Example Story",
+	}})
+	if len(got) != 1 {
+		t.Fatalf("expected one citation, got %#v", got)
+	}
+	if got[0].Source != "web" || got[0].URL != "https://example.com/story" || got[0].Text != "Example Story" {
+		t.Fatalf("unexpected citation: %#v", got[0])
+	}
+}
+
 type fakeEmbedder struct {
 	enabled bool
 	err     error
@@ -165,7 +179,7 @@ func TestDefaultAugment_fallbackOnRPCError(t *testing.T) {
 
 func TestDefaultAugment_deduplicatesLegacyHits(t *testing.T) {
 	kb := &storage.Knowledge{
-		Enabled: true,
+		Enabled:  true,
 		Embedder: &fakeEmbedder{enabled: false},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
