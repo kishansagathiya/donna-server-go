@@ -15,6 +15,8 @@ type MemoryCitation struct {
 	ID     string  `json:"id,omitempty"`
 	Text   string  `json:"text"`
 	Score  float64 `json:"score,omitempty"`
+	URL    string  `json:"url,omitempty"`
+	Title  string  `json:"title,omitempty"`
 }
 
 type TranscriptAugmentation struct {

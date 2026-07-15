@@ -26,6 +26,23 @@ type LLM struct {
 	Client      *http.Client
 }
 
+type ChatCompletionOptions struct {
+	WebSearch           bool
+	WebSearchMaxResults int
+}
+
+type ChatCompletionMetadata struct {
+	WebCitations []WebCitation
+}
+
+type WebCitation struct {
+	URL        string
+	Title      string
+	Content    string
+	StartIndex int
+	EndIndex   int
+}
+
 func NewLLM(apiKey, model, visionModel string) *LLM {
 	if visionModel == "" {
 		visionModel = model
@@ -69,24 +86,39 @@ func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage st
 	return messages
 }
 
-func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool) ([]byte, error) {
+func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatCompletionOptions) ([]byte, error) {
 	payload := map[string]any{
 		"model":    l.Model,
 		"messages": messages,
 		"stream":   stream,
 	}
+	if options.WebSearch {
+		maxResults := options.WebSearchMaxResults
+		if maxResults <= 0 {
+			maxResults = 3
+		}
+		payload["plugins"] = []map[string]any{{
+			"id":          "web",
+			"max_results": maxResults,
+		}}
+	}
 	return json.Marshal(payload)
 }
 
 func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onChunk func(string) error) error {
-	body, err := l.chatRequestBody(messages, true)
+	_, err := l.StreamCompletionWithOptions(ctx, messages, ChatCompletionOptions{}, onChunk)
+	return err
+}
+
+func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMessage, options ChatCompletionOptions, onChunk func(string) error) (ChatCompletionMetadata, error) {
+	body, err := l.chatRequestBody(messages, true, options)
 	if err != nil {
-		return err
+		return ChatCompletionMetadata{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return ChatCompletionMetadata{}, err
 	}
 	for k, v := range l.headers() {
 		req.Header.Set(k, v)
@@ -94,15 +126,16 @@ func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onCh
 
 	res, err := l.Client.Do(req)
 	if err != nil {
-		return err
+		return ChatCompletionMetadata{}, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
 	}
 
+	var meta ChatCompletionMetadata
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -118,8 +151,12 @@ func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onCh
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content     string                  `json:"content"`
+					Annotations []urlCitationAnnotation `json:"annotations"`
 				} `json:"delta"`
+				Message struct {
+					Annotations []urlCitationAnnotation `json:"annotations"`
+				} `json:"message"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
@@ -128,18 +165,21 @@ func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onCh
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		text := chunk.Choices[0].Delta.Content
+		choice := chunk.Choices[0]
+		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Delta.Annotations)
+		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Message.Annotations)
+		text := choice.Delta.Content
 		if text != "" && onChunk != nil {
 			if err := onChunk(text); err != nil {
-				return err
+				return ChatCompletionMetadata{}, err
 			}
 		}
 	}
-	return scanner.Err()
+	return meta, scanner.Err()
 }
 
 func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
-	body, err := l.chatRequestBody(messages, false)
+	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -177,6 +217,48 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 		return "", nil
 	}
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
+}
+
+type urlCitationAnnotation struct {
+	Type        string `json:"type"`
+	URLCitation struct {
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+		StartIndex int    `json:"start_index"`
+		EndIndex   int    `json:"end_index"`
+	} `json:"url_citation"`
+}
+
+func appendURLCitations(existing []WebCitation, annotations []urlCitationAnnotation) []WebCitation {
+	for _, annotation := range annotations {
+		if annotation.Type != "url_citation" {
+			continue
+		}
+		citation := annotation.URLCitation
+		url := strings.TrimSpace(citation.URL)
+		if url == "" {
+			continue
+		}
+		duplicate := false
+		for _, item := range existing {
+			if item.URL == url {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		existing = append(existing, WebCitation{
+			URL:        url,
+			Title:      strings.TrimSpace(citation.Title),
+			Content:    strings.TrimSpace(citation.Content),
+			StartIndex: citation.StartIndex,
+			EndIndex:   citation.EndIndex,
+		})
+	}
+	return existing
 }
 
 func (l *LLM) CompleteOnceVision(ctx context.Context, prompt, imageDataURL string) (string, error) {

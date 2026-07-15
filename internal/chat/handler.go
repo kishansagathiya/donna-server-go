@@ -31,6 +31,7 @@ type chatRequest struct {
 	SessionID   string                  `json:"session_id,omitempty"`
 	Mode        string                  `json:"mode,omitempty"`
 	Attachments []ChatAttachment        `json:"attachments,omitempty"`
+	WebSearch   bool                    `json:"web_search,omitempty"`
 }
 
 type chatResponse struct {
@@ -88,7 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := pipeline.ParseMode(body.Mode)
 
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, grounded, history, persistHistory, mode)
+		h.streamReply(w, r, userID, sessionID, grounded, history, persistHistory, mode, body.WebSearch)
 		return
 	}
 
@@ -96,6 +97,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserID:    userID,
 		SessionID: sessionID,
 		Mode:      mode,
+		WebSearch: body.WebSearch,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -130,6 +132,7 @@ func (h *Handler) streamReply(
 	history []providers.ChatMessage,
 	persistHistory []providers.ChatMessage,
 	mode pipeline.InteractionMode,
+	webSearch bool,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -162,6 +165,7 @@ func (h *Handler) streamReply(
 		UserID:    userID,
 		SessionID: sessionID,
 		Mode:      mode,
+		WebSearch: webSearch,
 	})
 	if err != nil {
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
