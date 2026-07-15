@@ -132,6 +132,75 @@ func (e *Engine) RunVoiceTurn(
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
+	ttsStarted := false
+	ttsFirstByteRecorded := false
+	var audioParts [][]byte
+	var audioFormat string
+	var audioSampleRate, audioChannels int
+	sentenceBuf := &sentenceBuffer{}
+	var audioMu sync.Mutex
+	var ttsErr error
+	sentenceQueue := make(chan string, 16)
+	ttsDone := make(chan struct{})
+
+	speakSentence := func(sentence string) error {
+		sentence = strings.TrimSpace(sentence)
+		if sentence == "" {
+			return nil
+		}
+		if !ttsStarted {
+			phase(protocol.TurnPhaseSynthesizing)
+			ttsStarted = true
+		}
+
+		audio, err := e.streamTTSToClient(
+			ctx,
+			sentence,
+			callbacks,
+			&timings,
+			&ttsFirstByteRecorded,
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+		if audio != nil {
+			audioMu.Lock()
+			audioFormat = audio.Format
+			audioParts = append(audioParts, audio.Data)
+			if audio.SampleRate > 0 {
+				audioSampleRate = audio.SampleRate
+			}
+			if audio.Channels > 0 {
+				audioChannels = audio.Channels
+			}
+			audioMu.Unlock()
+		}
+		return nil
+	}
+
+	go func() {
+		defer close(ttsDone)
+		for sentence := range sentenceQueue {
+			if err := speakSentence(sentence); err != nil {
+				ttsErr = err
+				return
+			}
+		}
+	}()
+
+	enqueueSentence := func(sentence string) error {
+		sentence = strings.TrimSpace(sentence)
+		if sentence == "" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sentenceQueue <- sentence:
+			return nil
+		}
+	}
 
 	err = e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
@@ -142,43 +211,54 @@ func (e *Engine) RunVoiceTurn(
 		if callbacks.OnReply != nil {
 			callbacks.OnReply(replyText)
 		}
+		for _, sentence := range sentenceBuf.add(chunk) {
+			if err := enqueueSentence(sentence); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
+		close(sentenceQueue)
+		<-ttsDone
 		return TurnResult{}, err
+	}
+
+	if err := enqueueSentence(sentenceBuf.flush()); err != nil {
+		close(sentenceQueue)
+		<-ttsDone
+		return TurnResult{}, err
+	}
+	close(sentenceQueue)
+	<-ttsDone
+	if ttsErr != nil {
+		return TurnResult{}, ttsErr
 	}
 
 	replyText = strings.TrimSpace(replyText)
 
 	var assistantAudio *AssistantAudio
-	if replyText != "" {
-		phase(protocol.TurnPhaseSynthesizing)
-		audio, err := e.streamTTSToClient(ctx, replyText, callbacks, &timings, nil, nil)
-		if err != nil {
-			return TurnResult{}, err
+	audioMu.Lock()
+	defer audioMu.Unlock()
+	if audioFormat != "" && len(audioParts) > 0 {
+		data := concatBytes(audioParts)
+		saveFormat := audioFormat
+		if audioFormat == "pcm16" {
+			if audioSampleRate == 0 {
+				audioSampleRate = 24000
+			}
+			if audioChannels == 0 {
+				audioChannels = 1
+			}
+			data = wav.PCM16ToWAV(data, wav.PCMFormat{
+				SampleRate: audioSampleRate,
+				Channels:   audioChannels,
+			})
+			saveFormat = "wav"
 		}
-		if audio != nil {
-			saveFormat := audio.Format
-			data := audio.Data
-			audioSampleRate := audio.SampleRate
-			audioChannels := audio.Channels
-			if audio.Format == "pcm16" {
-				if audioSampleRate == 0 {
-					audioSampleRate = 24000
-				}
-				if audioChannels == 0 {
-					audioChannels = 1
-				}
-				data = wav.PCM16ToWAV(data, wav.PCMFormat{
-					SampleRate: audioSampleRate,
-					Channels:   audioChannels,
-				})
-				saveFormat = "wav"
-			}
-			assistantAudio = &AssistantAudio{
-				Format: saveFormat,
-				Data:   data,
-			}
+		assistantAudio = &AssistantAudio{
+			Format: saveFormat,
+			Data:   data,
 		}
 	}
 
