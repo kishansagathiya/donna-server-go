@@ -37,7 +37,7 @@ func (d *Deleter) DeleteUser(ctx context.Context, userID string) error {
 		}
 	}
 
-	tables := []string{"notes", "kb_facts", "kb_sources", "kb_compile_log", "conversations", "kb_user_profiles", "user_preferences"}
+	tables := []string{"notes", "kb_facts", "kb_sources", "kb_compile_log", "conversation_turn_feedback", "conversations", "kb_user_profiles", "user_preferences"}
 	for _, table := range tables {
 		q := url.Values{}
 		q.Set("user_id", "eq."+userID)

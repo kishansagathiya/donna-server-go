@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -88,7 +89,39 @@ func TestList_success(t *testing.T) {
 	}
 }
 
-func TestGet_notFound(t *testing.T) {
+func TestTruncateTurns_success(t *testing.T) {
+	var deletedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/v1/conversations":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "conv-1"}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/rest/v1/conversation_turns":
+			deletedQuery = r.URL.RawQuery
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	db := storage.NewSupabase(srv.URL, "test-key")
+	h := &Handler{Store: &storage.Conversations{DB: db, Enabled: true}}
+	r := chi.NewRouter()
+	RegisterRoutes(r, authCtx("user-1"), h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/conversations/session/sess-1/turns?from_index=1", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want %d, body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if deletedQuery == "" {
+		t.Fatal("expected delete request")
+	}
+}
+
+func TestUpsertFeedback_notFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]any{})
 	}))
@@ -99,11 +132,17 @@ func TestGet_notFound(t *testing.T) {
 	r := chi.NewRouter()
 	RegisterRoutes(r, authCtx("user-1"), h)
 
-	req := httptest.NewRequest(http.MethodGet, "/conversations/missing", nil)
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/conversations/session/sess-missing/turns/0/feedback",
+		strings.NewReader(`{"rating":"up"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status %d, want %d", rec.Code, http.StatusNotFound)
+		t.Fatalf("status %d, want %d, body %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+

@@ -64,6 +64,9 @@ func (e *Engine) RunTextTurn(
 	firstToken := true
 
 	err := e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false
