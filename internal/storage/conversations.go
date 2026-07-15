@@ -179,7 +179,9 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		body["assistant_audio_path"] = assistantPath
 		body["assistant_audio_mime"] = assistantMime(assistantFormat)
 	}
-	if err := c.DB.Insert(ctx, "conversation_turns", body, nil); err != nil {
+	// Upsert so regenerate / retry can replace the same turn_index without
+	// hitting the unique (conversation_id, turn_index) constraint.
+	if err := c.DB.Upsert(ctx, "conversation_turns", "conversation_id,turn_index", body, nil); err != nil {
 		return err
 	}
 
@@ -350,6 +352,117 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 	})
 
 	return summaries, nil
+}
+
+// FindTextByClientSession returns the conversation id for a text chat session,
+// or "" if none exists yet.
+func (c *Conversations) FindTextByClientSession(ctx context.Context, userID, clientSessionID string) (string, error) {
+	if !c.Enabled {
+		return "", fmt.Errorf("conversation persistence disabled")
+	}
+	clientSessionID = strings.TrimSpace(clientSessionID)
+	if clientSessionID == "" {
+		return "", fmt.Errorf("missing client session id")
+	}
+
+	q := url.Values{}
+	q.Set("select", "id")
+	q.Set("user_id", "eq."+userID)
+	q.Set("channel", "eq.text")
+	q.Set("client_session_id", "eq."+clientSessionID)
+	q.Set("order", "created_at.desc")
+	q.Set("limit", "1")
+
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return rows[0].ID, nil
+}
+
+// DeleteTurnsFrom removes persisted turns with turn_index >= fromIndex for the
+// text conversation identified by client_session_id. Used by edit/resend and
+// regenerate so re-posts do not collide on turn_index.
+func (c *Conversations) DeleteTurnsFrom(ctx context.Context, userID, clientSessionID string, fromIndex int) error {
+	if !c.Enabled {
+		return fmt.Errorf("conversation persistence disabled")
+	}
+	if fromIndex < 0 {
+		return fmt.Errorf("invalid from_index")
+	}
+
+	conversationID, err := c.FindTextByClientSession(ctx, userID, clientSessionID)
+	if err != nil {
+		return err
+	}
+	if conversationID == "" {
+		// Nothing persisted yet — treat as success so clients can truncate UI-only.
+		return nil
+	}
+
+	q := url.Values{}
+	q.Set("conversation_id", "eq."+conversationID)
+	q.Set("turn_index", "gte."+fmt.Sprintf("%d", fromIndex))
+	if err := c.DB.Delete(ctx, "conversation_turns", q); err != nil {
+		return err
+	}
+
+	log.Print("turns truncated", map[string]any{
+		"conversationId": conversationID,
+		"fromIndex":      fromIndex,
+		"userId":         log.ShortID(userID),
+	})
+	return nil
+}
+
+type TurnFeedbackInput struct {
+	UserID          string
+	ClientSessionID string
+	TurnIndex       int
+	Rating          string // "up" | "down"
+	Comment         string
+}
+
+// UpsertTurnFeedback stores thumbs up/down for a turn. Resolves the conversation
+// via client_session_id. Fails if the conversation does not exist yet.
+func (c *Conversations) UpsertTurnFeedback(ctx context.Context, input TurnFeedbackInput) error {
+	if !c.Enabled {
+		return fmt.Errorf("conversation persistence disabled")
+	}
+	rating := strings.TrimSpace(input.Rating)
+	if rating != "up" && rating != "down" {
+		return fmt.Errorf("rating must be up or down")
+	}
+	if input.TurnIndex < 0 {
+		return fmt.Errorf("invalid turn_index")
+	}
+
+	conversationID, err := c.FindTextByClientSession(ctx, input.UserID, input.ClientSessionID)
+	if err != nil {
+		return err
+	}
+	if conversationID == "" {
+		return fmt.Errorf("conversation not found")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	body := map[string]any{
+		"user_id":         input.UserID,
+		"conversation_id": conversationID,
+		"turn_index":      input.TurnIndex,
+		"rating":          rating,
+		"comment":         strings.TrimSpace(input.Comment),
+		"updated_at":      now,
+	}
+	if err := c.DB.Upsert(ctx, "conversation_turn_feedback", "conversation_id,turn_index", body, nil); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID string) (*ConversationDetail, error) {
