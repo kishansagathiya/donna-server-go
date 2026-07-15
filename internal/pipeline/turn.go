@@ -267,7 +267,7 @@ func (e *Engine) streamTTSToClient(
 	var format string
 	var sampleRate, channels int
 
-	err := e.TTS.SynthesizeSpeech(ctx, text, func(chunk providers.AudioChunk) error {
+	err := e.TTS.SynthesizeSpeech(ctx, providers.PrepareTextForSpeech(text), func(chunk providers.AudioChunk) error {
 		if firstByte {
 			if ttsFirstByteRecorded == nil || !*ttsFirstByteRecorded {
 				timings.TTSFirstByteMs = int(time.Since(ttsStart).Milliseconds())
