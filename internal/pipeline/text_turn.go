@@ -78,7 +78,6 @@ func (e *Engine) RunTextTurn(
 	wg.Wait()
 	timings.AugmentMs = augmentMs
 	timings.PreferencesMs = preferencesMs
-	timings.PreLLMMs = int(time.Since(preLLMStart).Milliseconds())
 
 	systemPrompt := e.resolveSystemPromptWithPreferences(prefs)
 	if profileSummary != "" {
@@ -88,6 +87,7 @@ func (e *Engine) RunTextTurn(
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
 
 	llm, route := e.resolveLLMWithPreference(options.UserID, message, prefs.LLMModel)
+	timings.PreLLMMs = int(time.Since(preLLMStart).Milliseconds())
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true

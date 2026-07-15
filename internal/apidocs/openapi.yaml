@@ -697,6 +697,10 @@ components:
           type: integer
         augmentMs:
           type: integer
+        preferencesMs:
+          type: integer
+        preLlmMs:
+          type: integer
         llmFirstTokenMs:
           type: integer
         ttsFirstByteMs:

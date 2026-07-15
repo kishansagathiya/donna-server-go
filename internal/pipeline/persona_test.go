@@ -85,3 +85,11 @@ func TestResolveSystemPromptWithPreferences_preservesPersona(t *testing.T) {
 		t.Fatalf("missing base prompt: %q", got)
 	}
 }
+
+func TestResolveSystemPromptWithPreferences_emptyDefaultsToCompanion(t *testing.T) {
+	e := &Engine{Config: &config.Config{SystemPrompt: "Base."}}
+	got := e.resolveSystemPromptWithPreferences(storage.PrefsRow{})
+	if !strings.Contains(got, "second-brain companion") {
+		t.Fatalf("empty preferences should use companion: %q", got)
+	}
+}

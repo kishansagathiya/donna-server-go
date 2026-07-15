@@ -48,3 +48,21 @@ func TestResolveLLMWithPreference_preservesExplicitModelSelection(t *testing.T) 
 		t.Fatalf("route = %#v", route)
 	}
 }
+
+func TestResolveLLMWithPreference_rejectsUnallowlistedModel(t *testing.T) {
+	e := &Engine{
+		Config: &config.Config{
+			LLMModel:  "default-model",
+			LLMModels: []string{"default-model"},
+		},
+		LLM: &providers.LLM{Model: "default-model"},
+	}
+
+	llm, route := e.resolveLLMWithPreference("user-1", "hello", "unknown-model")
+	if llm.Model != "default-model" {
+		t.Fatalf("model = %q, want default-model", llm.Model)
+	}
+	if route.Route != "default" || route.Reason != "user_model_not_allowlisted" {
+		t.Fatalf("route = %#v", route)
+	}
+}
