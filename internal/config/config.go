@@ -27,6 +27,7 @@ type Config struct {
 	LLMFastModel           string
 	LLMModels              []string
 	AutoRouteEnabled       bool
+	VisionModel            string
 	STTModel               string
 	EmbeddingModel         string
 	SystemPrompt           string
@@ -79,6 +80,11 @@ func Load() (*Config, error) {
 	llmModels := parseModelList(os.Getenv("DONNA_LLM_MODELS"))
 	if !containsString(llmModels, llmModel) {
 		llmModels = append([]string{llmModel}, llmModels...)
+	}
+
+	visionModel := strings.TrimSpace(os.Getenv("DONNA_VISION_MODEL"))
+	if visionModel == "" {
+		visionModel = "z-ai/glm-4.6v"
 	}
 
 	sttModel := os.Getenv("DONNA_STT_MODEL")
@@ -144,6 +150,7 @@ func Load() (*Config, error) {
 		LLMFastModel:           llmFastModel,
 		LLMModels:              llmModels,
 		AutoRouteEnabled:       autoRoute,
+		VisionModel:            visionModel,
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,
