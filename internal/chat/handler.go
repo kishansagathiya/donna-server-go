@@ -26,18 +26,21 @@ type Handler struct {
 }
 
 type chatRequest struct {
-	Message   string                  `json:"message"`
-	History   []providers.ChatMessage `json:"history,omitempty"`
-	SessionID string                  `json:"session_id,omitempty"`
-	Mode      string                  `json:"mode,omitempty"`
+	Message     string                  `json:"message"`
+	History     []providers.ChatMessage `json:"history,omitempty"`
+	SessionID   string                  `json:"session_id,omitempty"`
+	Mode        string                  `json:"mode,omitempty"`
+	Attachments []ChatAttachment        `json:"attachments,omitempty"`
 }
 
 type chatResponse struct {
-	Reply     string                    `json:"reply"`
-	SessionID string                    `json:"session_id"`
-	Timings   protocol.TurnTimings      `json:"timings"`
-	Citations []pipeline.MemoryCitation `json:"citations,omitempty"`
-	Route     *pipeline.RouteDecision   `json:"route,omitempty"`
+	Reply               string                    `json:"reply"`
+	SessionID           string                    `json:"session_id"`
+	Timings             protocol.TurnTimings      `json:"timings"`
+	Citations           []pipeline.MemoryCitation `json:"citations,omitempty"`
+	Route               *pipeline.RouteDecision   `json:"route,omitempty"`
+	GroundedUserMessage string                    `json:"grounded_user_message,omitempty"`
+	AttachmentLabels    []string                  `json:"attachment_labels,omitempty"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,11 +67,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	message := strings.TrimSpace(body.Message)
-	if message == "" {
+	grounded, err := groundChatTurn(body.Message, body.Attachments)
+	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":   "empty_message",
-			"message": "Message cannot be empty",
+			"error":   "invalid_attachments",
+			"message": err.Error(),
 		})
 		return
 	}
@@ -85,11 +88,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := pipeline.ParseMode(body.Mode)
 
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, message, history, persistHistory, mode)
+		h.streamReply(w, r, userID, sessionID, grounded, history, persistHistory, mode)
 		return
 	}
 
-	result, err := h.Engine.RunTextTurn(r.Context(), message, history, pipeline.TextTurnCallbacks{}, pipeline.TurnOptions{
+	result, err := h.Engine.RunTextTurn(r.Context(), grounded.GroundedMessage, history, pipeline.TextTurnCallbacks{}, pipeline.TurnOptions{
 		UserID:    userID,
 		SessionID: sessionID,
 		Mode:      mode,
@@ -110,19 +113,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, grounded.GroundedMessage, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
 		reply = ""
 	}
-	writeJSON(w, http.StatusOK, buildChatResponse(reply, sessionID, result))
+	writeJSON(w, http.StatusOK, buildChatResponse(reply, sessionID, result, grounded))
 }
 
 func (h *Handler) streamReply(
 	w http.ResponseWriter,
 	r *http.Request,
-	userID, sessionID, message string,
+	userID, sessionID string,
+	grounded groundedTurn,
 	history []providers.ChatMessage,
 	persistHistory []providers.ChatMessage,
 	mode pipeline.InteractionMode,
@@ -147,7 +151,7 @@ func (h *Handler) streamReply(
 
 	writeSSE("session", mustJSON(map[string]string{"session_id": sessionID}))
 
-	result, err := h.Engine.RunTextTurn(r.Context(), message, history, pipeline.TextTurnCallbacks{
+	result, err := h.Engine.RunTextTurn(r.Context(), grounded.GroundedMessage, history, pipeline.TextTurnCallbacks{
 		OnPhase: func(phase protocol.TurnPhase) {
 			writeSSE("phase", string(phase))
 		},
@@ -169,7 +173,7 @@ func (h *Handler) streamReply(
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, grounded.GroundedMessage, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
@@ -180,15 +184,17 @@ func (h *Handler) streamReply(
 		writeSSE("citations", mustJSON(map[string]any{"citations": result.Citations}))
 	}
 
-	writeSSE("done", mustJSON(buildChatResponse(reply, sessionID, result)))
+	writeSSE("done", mustJSON(buildChatResponse(reply, sessionID, result, grounded)))
 }
 
-func buildChatResponse(reply, sessionID string, result pipeline.TurnResult) chatResponse {
+func buildChatResponse(reply, sessionID string, result pipeline.TurnResult, grounded groundedTurn) chatResponse {
 	resp := chatResponse{
-		Reply:     reply,
-		SessionID: sessionID,
-		Timings:   result.Timings,
-		Citations: result.Citations,
+		Reply:               reply,
+		SessionID:           sessionID,
+		Timings:             result.Timings,
+		Citations:           result.Citations,
+		GroundedUserMessage: grounded.GroundedMessage,
+		AttachmentLabels:    grounded.Labels,
 	}
 	if result.Route.Model != "" {
 		route := result.Route
