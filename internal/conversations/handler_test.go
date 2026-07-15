@@ -45,6 +45,7 @@ func TestList_success(t *testing.T) {
 				"id":                "conv-1",
 				"channel":           "text",
 				"title":             "Hello Donna",
+				"title_source":      "auto",
 				"client_session_id": "sess-1",
 				"created_at":        "2026-06-01T10:00:00Z",
 			}})
@@ -56,6 +57,8 @@ func TestList_success(t *testing.T) {
 				"assistant_transcript": "Hi there",
 				"created_at":           "2026-06-01T10:00:01Z",
 			}})
+		case r.URL.Path == "/rest/v1/conversation_tags":
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, r)
 		}
@@ -86,6 +89,106 @@ func TestList_success(t *testing.T) {
 	}
 	if body.Conversations[0].Title != "Hello Donna" {
 		t.Fatalf("title %q, want %q", body.Conversations[0].Title, "Hello Donna")
+	}
+}
+
+func TestPatch_rename(t *testing.T) {
+	var patched bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/v1/conversations":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":           "conv-1",
+				"channel":      "text",
+				"title":        "Renamed",
+				"title_source": "user",
+				"created_at":   "2026-06-01T10:00:00Z",
+			}})
+		case r.Method == http.MethodPatch && r.URL.Path == "/rest/v1/conversations":
+			patched = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/rest/v1/conversation_turns":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"conversation_id":      "conv-1",
+				"turn_index":           0,
+				"user_transcript":      "Hello",
+				"assistant_transcript": "Hi",
+				"created_at":           "2026-06-01T10:00:01Z",
+			}})
+		case r.URL.Path == "/rest/v1/conversation_tags":
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	db := storage.NewSupabase(srv.URL, "test-key")
+	h := &Handler{Store: &storage.Conversations{DB: db, Enabled: true}}
+	r := chi.NewRouter()
+	RegisterRoutes(r, authCtx("user-1"), h)
+
+	req := httptest.NewRequest(
+		http.MethodPatch,
+		"/conversations/conv-1",
+		strings.NewReader(`{"title":"Renamed"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want %d, body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !patched {
+		t.Fatal("expected patch request")
+	}
+}
+
+func TestDelete_success(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/v1/conversations":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":         "conv-1",
+				"channel":    "text",
+				"title":      "Bye",
+				"created_at": "2026-06-01T10:00:00Z",
+			}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/rest/v1/conversations":
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/rest/v1/conversation_turns":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"conversation_id":      "conv-1",
+				"turn_index":           0,
+				"user_transcript":      "Hello",
+				"assistant_transcript": "Hi",
+				"created_at":           "2026-06-01T10:00:01Z",
+			}})
+		case r.URL.Path == "/rest/v1/conversation_tags":
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	db := storage.NewSupabase(srv.URL, "test-key")
+	h := &Handler{Store: &storage.Conversations{DB: db, Enabled: true}}
+	r := chi.NewRouter()
+	RegisterRoutes(r, authCtx("user-1"), h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/conversations/conv-1", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want %d, body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !deleted {
+		t.Fatal("expected delete request")
 	}
 }
 

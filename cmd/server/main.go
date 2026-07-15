@@ -49,6 +49,7 @@ func main() {
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel)
+	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 
