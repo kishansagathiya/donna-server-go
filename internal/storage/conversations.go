@@ -15,8 +15,9 @@ import (
 const audioBucket = "conversation-audio"
 
 type Conversations struct {
-	DB      *Supabase
-	Enabled bool
+	DB       *Supabase
+	Enabled  bool
+	TitleGen TitleGenerator // optional; generates LLM titles after the first turn
 }
 
 type SaveTurnInput struct {
@@ -195,6 +196,11 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		}
 	}
 
+	// After the first turn, try an async LLM title without blocking persistence.
+	if input.TurnIndex == 0 {
+		c.maybeGenerateTitleAsync(input.ConversationID, input.UserTranscript, input.AssistantTranscript)
+	}
+
 	log.Print("turn saved", map[string]any{
 		"conversationId":     input.ConversationID,
 		"turnIndex":          input.TurnIndex,
@@ -241,16 +247,20 @@ func (c *Conversations) EndAsync(conversationID string) {
 }
 
 type ConversationSummary struct {
-	ID              string  `json:"id"`
-	Channel         string  `json:"channel"`
-	Title           string  `json:"title"`
-	ClientSessionID *string `json:"client_session_id,omitempty"`
-	VoiceSessionID  *string `json:"voice_session_id,omitempty"`
-	Preview         string  `json:"preview"`
-	TurnCount       int     `json:"turn_count"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	EndedAt         *string `json:"ended_at,omitempty"`
+	ID              string   `json:"id"`
+	Channel         string   `json:"channel"`
+	Title           string   `json:"title"`
+	TitleSource     string   `json:"title_source,omitempty"`
+	ClientSessionID *string  `json:"client_session_id,omitempty"`
+	VoiceSessionID  *string  `json:"voice_session_id,omitempty"`
+	Preview         string   `json:"preview"`
+	TurnCount       int      `json:"turn_count"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
+	EndedAt         *string  `json:"ended_at,omitempty"`
+	ArchivedAt      *string  `json:"archived_at,omitempty"`
+	PinnedAt        *string  `json:"pinned_at,omitempty"`
+	Tags            []string `json:"tags,omitempty"`
 }
 
 type StoredTurn struct {
@@ -264,17 +274,24 @@ type ConversationDetail struct {
 	ID              string       `json:"id"`
 	Channel         string       `json:"channel"`
 	Title           string       `json:"title"`
+	TitleSource     string       `json:"title_source,omitempty"`
 	ClientSessionID *string      `json:"client_session_id,omitempty"`
 	VoiceSessionID  *string      `json:"voice_session_id,omitempty"`
 	CreatedAt       string       `json:"created_at"`
 	EndedAt         *string      `json:"ended_at,omitempty"`
+	ArchivedAt      *string      `json:"archived_at,omitempty"`
+	PinnedAt        *string      `json:"pinned_at,omitempty"`
+	Tags            []string     `json:"tags,omitempty"`
 	Turns           []StoredTurn `json:"turns"`
 }
 
-func (c *Conversations) ListForUser(ctx context.Context, userID string, limit int) ([]ConversationSummary, error) {
+// ListForUser returns conversation summaries for the user.
+// By default archived chats are hidden. Pass opts.Query for keyword search.
+func (c *Conversations) ListForUser(ctx context.Context, userID string, opts ListOptions) ([]ConversationSummary, error) {
 	if !c.Enabled {
 		return nil, fmt.Errorf("conversation persistence disabled")
 	}
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
 	}
@@ -282,20 +299,72 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 		limit = 100
 	}
 
+	var filterIDs []string
+	if q := strings.TrimSpace(opts.Query); q != "" {
+		ids, err := c.searchConversationIDs(ctx, userID, ListOptions{
+			Limit:           limit,
+			IncludeArchived: opts.IncludeArchived || opts.ArchivedOnly,
+			Query:           q,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []ConversationSummary{}, nil
+		}
+		filterIDs = ids
+	}
+	if tag := strings.TrimSpace(opts.Tag); tag != "" {
+		ids, err := c.conversationIDsForTag(ctx, userID, tag)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return []ConversationSummary{}, nil
+		}
+		if filterIDs == nil {
+			filterIDs = ids
+		} else {
+			filterIDs = intersectIDs(filterIDs, ids)
+			if len(filterIDs) == 0 {
+				return []ConversationSummary{}, nil
+			}
+		}
+	}
+
 	q := url.Values{}
-	q.Set("select", "id,channel,title,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("select", "id,channel,title,title_source,client_session_id,voice_session_id,created_at,ended_at,archived_at,pinned_at")
 	q.Set("user_id", "eq."+userID)
+	if opts.ArchivedOnly {
+		q.Set("archived_at", "not.is.null")
+	} else if !opts.IncludeArchived {
+		q.Set("archived_at", "is.null")
+	}
+	if filterIDs != nil {
+		q.Set("id", "in.("+strings.Join(filterIDs, ",")+")")
+	}
 	q.Set("order", "created_at.desc")
-	q.Set("limit", fmt.Sprintf("%d", limit))
+	// Over-fetch slightly when filtering empty chats client-side after turn load.
+	fetchLimit := limit
+	if filterIDs == nil {
+		fetchLimit = limit * 2
+		if fetchLimit > 200 {
+			fetchLimit = 200
+		}
+	}
+	q.Set("limit", fmt.Sprintf("%d", fetchLimit))
 
 	var rows []struct {
 		ID              string  `json:"id"`
 		Channel         string  `json:"channel"`
 		Title           string  `json:"title"`
+		TitleSource     string  `json:"title_source"`
 		ClientSessionID *string `json:"client_session_id"`
 		VoiceSessionID  *string `json:"voice_session_id"`
 		CreatedAt       string  `json:"created_at"`
 		EndedAt         *string `json:"ended_at"`
+		ArchivedAt      *string `json:"archived_at"`
+		PinnedAt        *string `json:"pinned_at"`
 	}
 	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
 		return nil, err
@@ -310,6 +379,10 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 	}
 
 	turnsByConversation, err := c.loadTurnsForConversations(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	tagsByConversation, err := c.getTagsForConversations(ctx, userID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -333,10 +406,15 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 		if len(turns) == 0 {
 			continue
 		}
+		tags := tagsByConversation[row.ID]
+		if tags == nil {
+			tags = []string{}
+		}
 		summaries = append(summaries, ConversationSummary{
 			ID:              row.ID,
 			Channel:         row.Channel,
 			Title:           title,
+			TitleSource:     row.TitleSource,
 			ClientSessionID: row.ClientSessionID,
 			VoiceSessionID:  row.VoiceSessionID,
 			Preview:         preview,
@@ -344,14 +422,43 @@ func (c *Conversations) ListForUser(ctx context.Context, userID string, limit in
 			CreatedAt:       row.CreatedAt,
 			UpdatedAt:       updatedAt,
 			EndedAt:         row.EndedAt,
+			ArchivedAt:      row.ArchivedAt,
+			PinnedAt:        row.PinnedAt,
+			Tags:            tags,
 		})
+		if len(summaries) >= limit {
+			break
+		}
 	}
 
-	sort.Slice(summaries, func(i, j int) bool {
+	sort.SliceStable(summaries, func(i, j int) bool {
+		pi, pj := summaries[i].PinnedAt != nil, summaries[j].PinnedAt != nil
+		if pi != pj {
+			return pi
+		}
+		if pi && pj && summaries[i].PinnedAt != nil && summaries[j].PinnedAt != nil {
+			if *summaries[i].PinnedAt != *summaries[j].PinnedAt {
+				return *summaries[i].PinnedAt > *summaries[j].PinnedAt
+			}
+		}
 		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
 	})
 
 	return summaries, nil
+}
+
+func intersectIDs(a, b []string) []string {
+	set := make(map[string]struct{}, len(b))
+	for _, id := range b {
+		set[id] = struct{}{}
+	}
+	out := make([]string, 0, len(a))
+	for _, id := range a {
+		if _, ok := set[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // FindTextByClientSession returns the conversation id for a text chat session,
@@ -471,7 +578,7 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 	}
 
 	q := url.Values{}
-	q.Set("select", "id,channel,title,client_session_id,voice_session_id,created_at,ended_at")
+	q.Set("select", "id,channel,title,title_source,client_session_id,voice_session_id,created_at,ended_at,archived_at,pinned_at")
 	q.Set("id", "eq."+conversationID)
 	q.Set("user_id", "eq."+userID)
 	q.Set("limit", "1")
@@ -480,10 +587,13 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 		ID              string  `json:"id"`
 		Channel         string  `json:"channel"`
 		Title           string  `json:"title"`
+		TitleSource     string  `json:"title_source"`
 		ClientSessionID *string `json:"client_session_id"`
 		VoiceSessionID  *string `json:"voice_session_id"`
 		CreatedAt       string  `json:"created_at"`
 		EndedAt         *string `json:"ended_at"`
+		ArchivedAt      *string `json:"archived_at"`
+		PinnedAt        *string `json:"pinned_at"`
 	}
 	if err := c.DB.Get(ctx, "conversations", q, &rows); err != nil {
 		return nil, err
@@ -493,6 +603,10 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 	}
 
 	turns, err := c.loadTurns(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	tags, err := c.getTagsForConversation(ctx, userID, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -509,10 +623,14 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 		ID:              row.ID,
 		Channel:         row.Channel,
 		Title:           title,
+		TitleSource:     row.TitleSource,
 		ClientSessionID: row.ClientSessionID,
 		VoiceSessionID:  row.VoiceSessionID,
 		CreatedAt:       row.CreatedAt,
 		EndedAt:         row.EndedAt,
+		ArchivedAt:      row.ArchivedAt,
+		PinnedAt:        row.PinnedAt,
+		Tags:            tags,
 		Turns:           turns,
 	}, nil
 }
@@ -605,14 +723,20 @@ func fallbackConversationTitle(channel, createdAt string) string {
 func (c *Conversations) setTitle(ctx context.Context, conversationID, title string) error {
 	q := url.Values{}
 	q.Set("id", "eq."+conversationID)
-	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
+	return c.DB.Patch(ctx, "conversations", q, map[string]string{
+		"title":        title,
+		"title_source": "auto",
+	})
 }
 
 func (c *Conversations) setTitleIfEmpty(ctx context.Context, conversationID, title string) error {
 	q := url.Values{}
 	q.Set("id", "eq."+conversationID)
 	q.Set("title", "eq.")
-	return c.DB.Patch(ctx, "conversations", q, map[string]string{"title": title})
+	return c.DB.Patch(ctx, "conversations", q, map[string]string{
+		"title":        title,
+		"title_source": "auto",
+	})
 }
 
 // RecentUserTurns returns the most recent user transcripts across all of the
