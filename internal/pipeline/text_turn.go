@@ -59,11 +59,12 @@ func (e *Engine) RunTextTurn(
 
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
 
+	llm, route := e.resolveLLM(ctx, options.UserID, message)
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
 
-	err := e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
+	err := llm.StreamCompletion(ctx, messages, func(chunk string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -88,5 +89,7 @@ func (e *Engine) RunTextTurn(
 		Transcript: message,
 		ReplyText:  replyText,
 		Timings:    timings,
+		Citations:  augmented.Citations,
+		Route:      route,
 	}, nil
 }

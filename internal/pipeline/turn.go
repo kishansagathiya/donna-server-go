@@ -30,6 +30,8 @@ type TurnResult struct {
 	SkipReason     string
 	UsedRetry      bool
 	AssistantAudio *AssistantAudio
+	Citations      []MemoryCitation
+	Route          RouteDecision
 }
 
 type TurnCallbacks struct {
@@ -129,6 +131,7 @@ func (e *Engine) RunVoiceTurn(
 
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
 
+	llm, route := e.resolveLLM(ctx, options.UserID, transcript)
 	llmStart := time.Now()
 	replyText := ""
 	firstToken := true
@@ -202,7 +205,7 @@ func (e *Engine) RunVoiceTurn(
 		}
 	}
 
-	err = e.llmForUser(ctx, options.UserID).StreamCompletion(ctx, messages, func(chunk string) error {
+	err = llm.StreamCompletion(ctx, messages, func(chunk string) error {
 		if firstToken {
 			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
 			firstToken = false
@@ -270,23 +273,16 @@ func (e *Engine) RunVoiceTurn(
 		ReplyText:      replyText,
 		Timings:        timings,
 		AssistantAudio: assistantAudio,
+		Citations:      augmented.Citations,
+		Route:          route,
 	}, nil
 }
 
+// llmForUser resolves the model for a user without message-based auto-routing.
+// Prefer resolveLLM on turn paths so fast/strong routing can apply.
 func (e *Engine) llmForUser(ctx context.Context, userID string) *providers.LLM {
-	if e.Preferences == nil || userID == "" {
-		return e.LLM
-	}
-	model, err := e.Preferences.GetLLMModel(ctx, userID)
-	if err != nil || model == "" {
-		return e.LLM
-	}
-	for _, allowed := range e.Config.LLMModels {
-		if model == allowed {
-			return e.LLM.WithModel(model)
-		}
-	}
-	return e.LLM
+	llm, _ := e.resolveLLM(ctx, userID, "")
+	return llm
 }
 
 func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessionID string) (TranscriptAugmentation, string) {

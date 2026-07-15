@@ -44,7 +44,7 @@ func TestApplyTokenBudget_dropsTailItems(t *testing.T) {
 		{Text: "cccc", Score: 1},
 	}
 	got := applyTokenBudget(hits, 12, 0)
-	if len(got) != 2 || got[0] != "aaaa" || got[1] != "bbbb" {
+	if len(got) != 2 || got[0].Text != "aaaa" || got[1].Text != "bbbb" {
 		t.Fatalf("unexpected budget trim: %#v", got)
 	}
 }
@@ -52,7 +52,7 @@ func TestApplyTokenBudget_dropsTailItems(t *testing.T) {
 func TestApplyTokenBudget_keepsFirstWhenOverBudget(t *testing.T) {
 	hits := []storage.MemoryHit{{Text: strings.Repeat("x", 100), Score: 1}}
 	got := applyTokenBudget(hits, 10, 0)
-	if len(got) != 1 || got[0] != hits[0].Text {
+	if len(got) != 1 || got[0].Text != hits[0].Text {
 		t.Fatalf("expected first hit kept: %#v", got)
 	}
 }
@@ -63,8 +63,29 @@ func TestApplyTokenBudget_skipsEmptyText(t *testing.T) {
 		{Text: "valid", Score: 1},
 	}
 	got := applyTokenBudget(hits, 100, 0)
-	if len(got) != 1 || got[0] != "valid" {
+	if len(got) != 1 || got[0].Text != "valid" {
 		t.Fatalf("unexpected result: %#v", got)
+	}
+}
+
+func TestToCitations_truncatesAndKeepsIDs(t *testing.T) {
+	long := strings.Repeat("a", citationTextMax+40)
+	hits := []storage.MemoryHit{
+		{Source: "note", ID: "n1", Text: long, Score: 0.9},
+		{Source: "fact", ID: "f1", Text: "short", Score: 0.8},
+	}
+	cites := toCitations(hits)
+	if len(cites) != 2 {
+		t.Fatalf("expected 2 citations, got %#v", cites)
+	}
+	if cites[0].ID != "n1" || cites[0].Source != "note" {
+		t.Fatalf("unexpected first citation: %#v", cites[0])
+	}
+	if !strings.HasSuffix(cites[0].Text, "…") || len(cites[0].Text) >= len(long) {
+		t.Fatalf("citation text not truncated: %q (%d)", cites[0].Text, len(cites[0].Text))
+	}
+	if cites[1].Text != "short" {
+		t.Fatalf("short citation changed: %#v", cites[1])
 	}
 }
 
@@ -245,7 +266,7 @@ func TestApplyTokenBudget_skipsLowScore(t *testing.T) {
 		{Text: "weak", Score: 0.1},
 	}
 	got := applyTokenBudget(hits, 1000, 0.35)
-	if len(got) != 1 || got[0] != "relevant" {
+	if len(got) != 1 || got[0].Text != "relevant" {
 		t.Fatalf("expected only high-score hit, got %#v", got)
 	}
 }

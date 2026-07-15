@@ -24,7 +24,9 @@ type Config struct {
 	CartesiaAPIKey         string
 	ElevenLabsAPIKey       string
 	LLMModel               string
+	LLMFastModel           string
 	LLMModels              []string
+	AutoRouteEnabled       bool
 	STTModel               string
 	EmbeddingModel         string
 	SystemPrompt           string
@@ -91,7 +93,7 @@ func Load() (*Config, error) {
 
 	systemPrompt := os.Getenv("DONNA_SYSTEM_PROMPT")
 	if systemPrompt == "" {
-		systemPrompt = "You are Donna, a sharp and thoughtful voice companion. Give the best answer you can — accurate, specific, and genuinely useful. For voice, keep replies to 1–2 short sentences unless the user asks you to go deeper. Be warm and direct, not robotic. If you're unsure or the question needs up-to-date information you don't have, say so plainly instead of guessing. Use what you know about this user when it's relevant; don't force personal details into every reply. Never ask the user to repeat themselves."
+		systemPrompt = "You are Donna, a sharp and thoughtful second-brain companion for text and voice. Give the best answer you can — accurate, specific, and genuinely useful. Default to 2–4 sentences for simple questions; go longer when the topic needs it or the user asks you to explain, compare, or go deeper. For spoken replies, prefer 1–2 short sentences unless the user asks for depth. Be warm and direct, not robotic. Use what you know about this user when it's relevant; don't force personal details into every reply."
 	}
 
 	memoryMinScore := 0.35
@@ -99,6 +101,22 @@ func Load() (*Config, error) {
 		if n, err := strconv.ParseFloat(raw, 64); err == nil && n >= 0 {
 			memoryMinScore = n
 		}
+	}
+
+	maxHistoryMessages := 20
+	if raw := strings.TrimSpace(os.Getenv("DONNA_MAX_HISTORY_MESSAGES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxHistoryMessages = n
+		}
+	}
+
+	llmFastModel := strings.TrimSpace(os.Getenv("DONNA_LLM_FAST_MODEL"))
+	autoRoute := false
+	if raw := strings.TrimSpace(os.Getenv("DONNA_LLM_AUTO_ROUTE")); raw != "" {
+		autoRoute = parseBool(raw)
+	}
+	if llmFastModel != "" && !containsString(llmModels, llmFastModel) {
+		llmModels = append(llmModels, llmFastModel)
 	}
 
 	personas := parseModelList(os.Getenv("DONNA_PERSONAS"))
@@ -123,14 +141,25 @@ func Load() (*Config, error) {
 		CartesiaAPIKey:         os.Getenv("CARTESIA_API_KEY"),
 		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
 		LLMModel:               llmModel,
+		LLMFastModel:           llmFastModel,
 		LLMModels:              llmModels,
+		AutoRouteEnabled:       autoRoute,
 		STTModel:               sttModel,
 		EmbeddingModel:         embeddingModel,
 		SystemPrompt:           systemPrompt,
 		MemoryMinScore:         memoryMinScore,
-		MaxHistoryMessages:     20,
+		MaxHistoryMessages:     maxHistoryMessages,
 		Personas:               personas,
 	}, nil
+}
+
+func parseBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseModelList(raw string) []string {

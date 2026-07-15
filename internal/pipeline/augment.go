@@ -7,10 +7,21 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
+// MemoryCitation is a retrieved memory/note surfaced to clients for provenance UI.
+// Text is truncated for display; the model still receives fuller retrieved content
+// via FormatAugmentedUserMessage and should not echo raw blobs in the reply.
+type MemoryCitation struct {
+	Source string  `json:"source"` // "fact" | "note"
+	ID     string  `json:"id,omitempty"`
+	Text   string  `json:"text"`
+	Score  float64 `json:"score,omitempty"`
+}
+
 type TranscriptAugmentation struct {
 	Transcript   string
 	Text         string
 	Retrieved    []string
+	Citations    []MemoryCitation
 	SessionNotes string
 }
 
@@ -59,11 +70,13 @@ func fmtQuoteUser(transcript string) string {
 	return `User said: "` + transcript + `"`
 }
 
-
 // augmentTokenBudget is the soft character cap (~1500 tokens ≈ 6000 chars) for
 // retrieved memory injected into the prompt. Lowest-scoring items are dropped
 // from the tail when the budget is exceeded.
 const augmentTokenBudget = 6000
+
+// citationTextMax is the max characters kept per citation for client UI.
+const citationTextMax = 160
 
 // defaultMemoryMinScore is used when no threshold is configured (tests, zero value).
 const defaultMemoryMinScore = 0.35
@@ -86,7 +99,9 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 	if kb != nil && kb.Enabled {
 		hits, err := kb.RetrieveMemory(ctx, userID, transcript, 20)
 		if err == nil {
-			base.Retrieved = applyTokenBudget(hits, augmentTokenBudget, minScore)
+			kept := applyTokenBudget(hits, augmentTokenBudget, minScore)
+			base.Retrieved = citationTexts(kept)
+			base.Citations = toCitations(kept)
 			base.Text = FormatAugmentedUserMessage(base)
 			return base
 		}
@@ -97,7 +112,7 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 	var retrieved []string
 	seen := make(map[string]struct{})
 
-	appendRetrieved := func(items []string) {
+	appendRetrieved := func(items []string, source string) {
 		for _, item := range items {
 			key := strings.ToLower(strings.TrimSpace(item))
 			if key == "" {
@@ -108,25 +123,32 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 			}
 			seen[key] = struct{}{}
 			retrieved = append(retrieved, item)
+			base.Citations = append(base.Citations, MemoryCitation{
+				Source: source,
+				Text:   truncateCitationText(item),
+			})
 		}
 	}
 
 	if notes != nil && notes.Enabled {
 		noteSnippets, err := notes.RetrieveNoteSnippets(ctx, userID, transcript, 6)
 		if err == nil {
-			appendRetrieved(noteSnippets)
+			appendRetrieved(noteSnippets, "note")
 		}
 	}
 
 	if kb != nil && kb.Enabled {
 		facts, err := kb.RetrieveFacts(ctx, userID, transcript, 10)
 		if err == nil {
-			appendRetrieved(facts)
+			appendRetrieved(facts, "fact")
 		}
 	}
 
 	if len(retrieved) > 10 {
 		retrieved = retrieved[:10]
+		if len(base.Citations) > 10 {
+			base.Citations = base.Citations[:10]
+		}
 	}
 	base.Retrieved = retrieved
 
@@ -137,8 +159,8 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 // applyTokenBudget trims the retrieved list to fit within charBudget, dropping
 // lowest-scoring items from the tail (hits are already score-descending).
 // Hits below minScore are excluded so weakly related memories are not injected.
-func applyTokenBudget(hits []storage.MemoryHit, charBudget int, minScore float64) []string {
-	out := make([]string, 0, len(hits))
+func applyTokenBudget(hits []storage.MemoryHit, charBudget int, minScore float64) []storage.MemoryHit {
+	out := make([]storage.MemoryHit, 0, len(hits))
 	used := 0
 	for _, h := range hits {
 		if h.Text == "" {
@@ -150,8 +172,42 @@ func applyTokenBudget(hits []storage.MemoryHit, charBudget int, minScore float64
 		if used+len(h.Text) > charBudget && len(out) > 0 {
 			break
 		}
-		out = append(out, h.Text)
+		out = append(out, h)
 		used += len(h.Text) + 3 // account for " | " separator
 	}
 	return out
+}
+
+func citationTexts(hits []storage.MemoryHit) []string {
+	out := make([]string, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, h.Text)
+	}
+	return out
+}
+
+func toCitations(hits []storage.MemoryHit) []MemoryCitation {
+	out := make([]MemoryCitation, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, MemoryCitation{
+			Source: h.Source,
+			ID:     h.ID,
+			Text:   truncateCitationText(h.Text),
+			Score:  h.Score,
+		})
+	}
+	return out
+}
+
+func truncateCitationText(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= citationTextMax {
+		return text
+	}
+	// Avoid cutting mid-rune for typical ASCII/UTF-8 snippets.
+	cut := citationTextMax
+	for cut > 0 && text[cut]&0xc0 == 0x80 {
+		cut--
+	}
+	return strings.TrimSpace(text[:cut]) + "…"
 }

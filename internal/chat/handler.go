@@ -33,9 +33,11 @@ type chatRequest struct {
 }
 
 type chatResponse struct {
-	Reply     string               `json:"reply"`
-	SessionID string               `json:"session_id"`
-	Timings   protocol.TurnTimings `json:"timings"`
+	Reply     string                    `json:"reply"`
+	SessionID string                    `json:"session_id"`
+	Timings   protocol.TurnTimings      `json:"timings"`
+	Citations []pipeline.MemoryCitation `json:"citations,omitempty"`
+	Route     *pipeline.RouteDecision   `json:"route,omitempty"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,19 +79,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	history := append([]providers.ChatMessage(nil), body.History...)
-	// Cap history server-side so long conversations don't inflate the prompt
-	// (and therefore TTFT). MaxHistoryMessages is otherwise only enforced on
-	// the voice path. Keep the most recent turns.
-	if h.Engine != nil && h.Engine.Config != nil {
-		if max := h.Engine.Config.MaxHistoryMessages; max > 0 && len(history) > max {
-			history = history[len(history)-max:]
-		}
-	}
+	persistHistory := history
+	history = h.packHistory(r.Context(), history)
 
 	mode := pipeline.ParseMode(body.Mode)
 
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, message, history, mode)
+		h.streamReply(w, r, userID, sessionID, message, history, persistHistory, mode)
 		return
 	}
 
@@ -114,17 +110,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
 		reply = ""
 	}
-	writeJSON(w, http.StatusOK, chatResponse{
-		Reply:     reply,
-		SessionID: sessionID,
-		Timings:   result.Timings,
-	})
+	writeJSON(w, http.StatusOK, buildChatResponse(reply, sessionID, result))
 }
 
 func (h *Handler) streamReply(
@@ -132,6 +124,7 @@ func (h *Handler) streamReply(
 	r *http.Request,
 	userID, sessionID, message string,
 	history []providers.ChatMessage,
+	persistHistory []providers.ChatMessage,
 	mode pipeline.InteractionMode,
 ) {
 	flusher, ok := w.(http.Flusher)
@@ -176,17 +169,51 @@ func (h *Handler) streamReply(
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, history, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, message, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
 		reply = ""
 	}
-	writeSSE("done", mustJSON(chatResponse{
+
+	if len(result.Citations) > 0 {
+		writeSSE("citations", mustJSON(map[string]any{"citations": result.Citations}))
+	}
+
+	writeSSE("done", mustJSON(buildChatResponse(reply, sessionID, result)))
+}
+
+func buildChatResponse(reply, sessionID string, result pipeline.TurnResult) chatResponse {
+	resp := chatResponse{
 		Reply:     reply,
 		SessionID: sessionID,
 		Timings:   result.Timings,
-	}))
+		Citations: result.Citations,
+	}
+	if result.Route.Model != "" {
+		route := result.Route
+		resp.Route = &route
+	}
+	return resp
+}
+
+// packHistory caps prompt history. When older turns would be dropped, it
+// summarizes them (falling back to truncation on failure). Budget is
+// Config.MaxHistoryMessages (DONNA_MAX_HISTORY_MESSAGES).
+func (h *Handler) packHistory(ctx context.Context, history []providers.ChatMessage) []providers.ChatMessage {
+	if h.Engine == nil || h.Engine.Config == nil {
+		return history
+	}
+	max := h.Engine.Config.MaxHistoryMessages
+	if max <= 0 || len(history) <= max {
+		return history
+	}
+
+	summarizer := h.Engine.LLM
+	if h.Engine.Config.LLMFastModel != "" {
+		summarizer = h.Engine.LLM.WithModel(h.Engine.Config.LLMFastModel)
+	}
+	return pipeline.PackHistory(ctx, summarizer, history, max)
 }
 
 func (h *Handler) persistAfterTurn(
