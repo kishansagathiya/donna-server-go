@@ -11,11 +11,13 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/actions"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
@@ -46,6 +48,7 @@ func main() {
 	notesStore := &storage.Notes{DB: supa, Enabled: cfg.PersistKnowledge, Embedder: embeddings}
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
+	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
@@ -54,7 +57,16 @@ func main() {
 
 	noteIndexer := &notes.Indexer{Store: notesStore, LLM: llm}
 	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
-	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue}
+
+	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}}
+	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, AutoInternal: false}
+	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
+	intentQueue := intents.NewQueue(intentExtractor)
+
+	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Intents: intentQueue}
+	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
+		intentQueue.EnqueueConversationTurn(input.UserID, input.ConversationID, input.TurnIndex, input.UserTranscript)
+	}
 
 	compiler := &knowledge.Compiler{KB: kbStore, LLM: llm, Notes: noteSync}
 	compileQueue := knowledge.NewQueue(kbStore, compiler)
@@ -96,12 +108,15 @@ func main() {
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
 	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
-	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker, KB: kbStore}
+	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker, KB: kbStore, Intents: intentQueue}
 	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
 	})
 	notes.RegisterRoutes(r, authMiddleware, notesHandler)
+
+	actionsHandler := &actions.Handler{Store: actionsStore, Executor: actionExecutor}
+	actions.RegisterRoutes(r, authMiddleware, actionsHandler)
 
 	memoryHandler := &memory.Handler{KB: kbStore}
 	memory.RegisterRoutes(r, authMiddleware, memoryHandler)
@@ -168,6 +183,8 @@ func main() {
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
 	log.Print("notes: GET /notes/search, POST /notes/daily-check, web-only CRUD at /notes/*", nil)
+	log.Print("intents: GET /intents, POST /intents/{id}/dismiss", nil)
+	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)

@@ -21,6 +21,8 @@ type Handler struct {
 	// a source_id) by signing the conversation-audio user.wav. Nil when
 	// persistence is disabled; clients just get a text-only note.
 	KB *storage.Knowledge
+	// Intents extracts actionable intents after user note updates.
+	Intents IntentQueue
 }
 
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +229,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "update_failed", "message": err.Error()})
 		return
+	}
+	if update.Content != nil && h.Intents != nil {
+		h.Intents.EnqueueNote(userID, note.ID, note.Content)
 	}
 	writeJSON(w, http.StatusOK, note)
 }

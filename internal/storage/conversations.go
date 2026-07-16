@@ -18,6 +18,9 @@ type Conversations struct {
 	DB       *Supabase
 	Enabled  bool
 	TitleGen TitleGenerator // optional; generates LLM titles after the first turn
+	// OnTurnPersisted is invoked after a turn is successfully saved (text or voice).
+	// Used by the intent extractor; must be non-blocking / enqueue-only.
+	OnTurnPersisted func(input SaveTurnInput)
 }
 
 type SaveTurnInput struct {
@@ -207,6 +210,9 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		"userAudioPath":      userPath,
 		"assistantAudioPath": assistantPath,
 	})
+	if c.OnTurnPersisted != nil {
+		c.OnTurnPersisted(input)
+	}
 	return nil
 }
 

@@ -9,8 +9,14 @@ import (
 )
 
 type Sync struct {
-	Store *storage.Notes
-	Queue *IndexQueue
+	Store   *storage.Notes
+	Queue   *IndexQueue
+	Intents IntentQueue
+}
+
+// IntentQueue extracts actionable intents from user-authored notes.
+type IntentQueue interface {
+	EnqueueNote(userID, noteID, content string)
 }
 
 func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, content string, noteDate time.Time) error {
@@ -76,6 +82,9 @@ func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDat
 	}
 	if s.Queue != nil {
 		s.Queue.Enqueue(note.ID)
+	}
+	if s.Intents != nil {
+		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
 		if _, err := s.Store.SetTagsForNote(ctx, userID, note.ID, tags); err != nil {
