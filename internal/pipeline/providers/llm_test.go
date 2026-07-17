@@ -74,7 +74,7 @@ func TestChatRequestBody_normalizesOnlineSuffix(t *testing.T) {
 	body, err := llm.chatRequestBody([]ChatMessage{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
-	}, true, ChatCompletionOptions{})
+	}, true, ChatCompletionOptions{WebSearch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,9 +86,11 @@ func TestChatRequestBody_normalizesOnlineSuffix(t *testing.T) {
 	if got["model"] != "moonshotai/kimi-k3" {
 		t.Fatalf("model = %#v, want moonshotai/kimi-k3", got["model"])
 	}
-	plugins, ok := got["plugins"].([]any)
-	if !ok || len(plugins) != 1 {
-		t.Fatalf("expected web plugin from :online suffix, got %#v", got["plugins"])
+	if _, ok := got["plugins"]; ok {
+		t.Fatalf("kimi-k3 must not enable web plugin, got %#v", got["plugins"])
+	}
+	if _, ok := got["max_tokens"]; ok {
+		t.Fatalf("kimi-k3 must omit max_tokens, got %#v", got["max_tokens"])
 	}
 
 	msgs, ok := got["messages"].([]any)
@@ -101,5 +103,26 @@ func TestChatRequestBody_normalizesOnlineSuffix(t *testing.T) {
 	}
 	if _, ok := assistant["reasoning_content"]; !ok {
 		t.Fatalf("assistant history missing reasoning_content: %#v", assistant)
+	}
+}
+
+func TestChatRequestBody_onlineSuffixEnablesWebForNonKimi(t *testing.T) {
+	llm := NewLLM("test-key", "deepseek/deepseek-v4-pro:online", "")
+	body, err := llm.chatRequestBody([]ChatMessage{
+		{Role: "user", Content: "hi"},
+	}, true, ChatCompletionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("model = %#v", got["model"])
+	}
+	plugins, ok := got["plugins"].([]any)
+	if !ok || len(plugins) != 1 {
+		t.Fatalf("expected web plugin, got %#v", got["plugins"])
 	}
 }

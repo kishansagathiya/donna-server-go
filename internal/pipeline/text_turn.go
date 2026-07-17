@@ -93,13 +93,8 @@ func (e *Engine) RunTextTurn(
 	replyText := ""
 	firstToken := true
 
-	// Reasoning models (kimi-k3) + web search can sit quiet for a long time.
-	// Keep max_tokens high enough that thinking does not consume the entire
-	// completion budget. ":online" is normalized to base model + web plugin.
 	maxTokens := 8192
-	if strings.Contains(strings.ToLower(route.Model), "kimi-k3") ||
-		strings.HasSuffix(route.Model, ":online") ||
-		options.WebSearch {
+	if strings.HasSuffix(route.Model, ":online") || options.WebSearch {
 		maxTokens = 16384
 	}
 

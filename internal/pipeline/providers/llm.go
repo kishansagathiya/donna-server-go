@@ -109,21 +109,23 @@ func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage st
 }
 
 func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatCompletionOptions) ([]byte, error) {
-	maxTokens := options.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = defaultChatMaxTokens
-	}
-
 	model, webSearch := normalizeModelAndWebSearch(l.Model, options.WebSearch)
 	payload := map[string]any{
-		"model":      model,
-		"messages":   messagesForModel(model, messages),
-		"stream":     stream,
-		"max_tokens": maxTokens,
+		"model":    model,
+		"messages": messagesForModel(model, messages),
+		"stream":   stream,
 	}
-	// Do NOT send reasoning.exclude for Moonshot/Kimi — K3 rejects unsupported
-	// reasoning controls with a generic "Provider returned error". Keepalives
-	// handle long thinking instead.
+
+	// Kimi K3 manages its own thinking budget. Sending max_tokens has caused
+	// empty/failed completions when Moonshot spends the whole budget on reasoning.
+	if !isKimiK3(model) {
+		maxTokens := options.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = defaultChatMaxTokens
+		}
+		payload["max_tokens"] = maxTokens
+	}
+
 	if webSearch {
 		maxResults := options.WebSearchMaxResults
 		if maxResults <= 0 {
@@ -137,15 +139,28 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 	return json.Marshal(payload)
 }
 
-// normalizeModelAndWebSearch maps OpenRouter ":online" model suffixes onto the
-// base model + web plugin. Some reasoning models (kimi-k3) fail with the
-// suffix form even though the plugin form works.
+// normalizeModelAndWebSearch maps OpenRouter ":online" suffixes onto the base
+// model + web plugin. Kimi K3 currently fails with OpenRouter's web plugin, so
+// :online / web search is ignored for that model.
 func normalizeModelAndWebSearch(model string, webSearch bool) (string, bool) {
 	model = strings.TrimSpace(model)
-	if strings.HasSuffix(model, ":online") {
-		return strings.TrimSuffix(model, ":online"), true
+	online := strings.HasSuffix(model, ":online")
+	if online {
+		model = strings.TrimSuffix(model, ":online")
+	}
+	if isKimiK3(model) {
+		return model, false
+	}
+	if online {
+		return model, true
 	}
 	return model, webSearch
+}
+
+func isKimiK3(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	lower = strings.TrimSuffix(lower, ":online")
+	return strings.Contains(lower, "kimi-k3")
 }
 
 func messagesForModel(model string, messages []ChatMessage) []ChatMessage {
@@ -271,14 +286,14 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
-				Content          string                  `json:"content"`
+				Content          json.RawMessage         `json:"content"`
 				Reasoning        string                  `json:"reasoning"`
 				ReasoningContent string                  `json:"reasoning_content"`
 				ReasoningDetails json.RawMessage         `json:"reasoning_details"`
 				Annotations      []urlCitationAnnotation `json:"annotations"`
 			} `json:"delta"`
 			Message struct {
-				Content     string                  `json:"content"`
+				Content     json.RawMessage         `json:"content"`
 				Annotations []urlCitationAnnotation `json:"annotations"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -306,9 +321,9 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 	}
 	citations = append(citations, choice.Delta.Annotations...)
 	citations = append(citations, choice.Message.Annotations...)
-	text = choice.Delta.Content
+	text = extractTextContent(choice.Delta.Content)
 	if text == "" {
-		text = choice.Message.Content
+		text = extractTextContent(choice.Message.Content)
 	}
 	if text == "" {
 		activity = choice.Delta.Reasoning != "" ||
@@ -316,6 +331,28 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 			len(choice.Delta.ReasoningDetails) > 0
 	}
 	return text, citations, activity, nil
+}
+
+func extractTextContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, part := range parts {
+			b.WriteString(part.Text)
+		}
+		return b.String()
+	}
+	return ""
 }
 
 func formatOpenRouterError(message, raw, providerName string) error {

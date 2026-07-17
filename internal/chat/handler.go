@@ -201,6 +201,7 @@ func (h *Handler) streamReply(
 		log.Warn("chat stream failed", map[string]any{
 			"userId":    log.ShortID(userID),
 			"sessionId": sessionID,
+			"webSearch": webSearch,
 			"error":     err.Error(),
 		})
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
