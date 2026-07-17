@@ -17,6 +17,9 @@ const openRouterBase = "https://openrouter.ai/api/v1"
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ReasoningContent is required by Moonshot/Kimi on assistant history turns
+	// when thinking is enabled. Empty string is accepted; omitting the field is not.
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 type LLM struct {
@@ -35,9 +38,6 @@ type ChatCompletionOptions struct {
 	// defaultChatMaxTokens. Reasoning models like kimi-k3 need headroom so
 	// thinking does not consume the entire budget and leave an empty reply.
 	MaxTokens int
-	// ExcludeReasoning asks OpenRouter not to stream reasoning tokens. The
-	// model still thinks when required; we only wait for final content.
-	ExcludeReasoning bool
 	// OnActivity is invoked on OpenRouter keepalives and reasoning-only
 	// deltas so callers can flush SSE heartbeats to the browser.
 	OnActivity func()
@@ -113,19 +113,18 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 	if maxTokens <= 0 {
 		maxTokens = defaultChatMaxTokens
 	}
+
+	model, webSearch := normalizeModelAndWebSearch(l.Model, options.WebSearch)
 	payload := map[string]any{
-		"model":      l.Model,
-		"messages":   messages,
+		"model":      model,
+		"messages":   messagesForModel(model, messages),
 		"stream":     stream,
 		"max_tokens": maxTokens,
 	}
-	// Exclude reasoning from the wire format for Donna chat/voice. Kimi K3
-	// reasons at "max" effort by default; streaming that thinking can idle
-	// the client SSE connection and starve content tokens.
-	if options.ExcludeReasoning {
-		payload["reasoning"] = map[string]any{"exclude": true}
-	}
-	if options.WebSearch {
+	// Do NOT send reasoning.exclude for Moonshot/Kimi — K3 rejects unsupported
+	// reasoning controls with a generic "Provider returned error". Keepalives
+	// handle long thinking instead.
+	if webSearch {
 		maxResults := options.WebSearchMaxResults
 		if maxResults <= 0 {
 			maxResults = 3
@@ -138,10 +137,41 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 	return json.Marshal(payload)
 }
 
+// normalizeModelAndWebSearch maps OpenRouter ":online" model suffixes onto the
+// base model + web plugin. Some reasoning models (kimi-k3) fail with the
+// suffix form even though the plugin form works.
+func normalizeModelAndWebSearch(model string, webSearch bool) (string, bool) {
+	model = strings.TrimSpace(model)
+	if strings.HasSuffix(model, ":online") {
+		return strings.TrimSuffix(model, ":online"), true
+	}
+	return model, webSearch
+}
+
+func messagesForModel(model string, messages []ChatMessage) []ChatMessage {
+	if !requiresAssistantReasoningContent(model) {
+		return messages
+	}
+	out := make([]ChatMessage, len(messages))
+	copy(out, messages)
+	empty := ""
+	for i := range out {
+		if out[i].Role == "assistant" && out[i].ReasoningContent == nil {
+			// Kimi rejects multi-turn history when thinking is on but prior
+			// assistant messages omit reasoning_content.
+			out[i].ReasoningContent = &empty
+		}
+	}
+	return out
+}
+
+func requiresAssistantReasoningContent(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "moonshotai/kimi") || strings.Contains(lower, "kimi-k")
+}
+
 func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onChunk func(string) error) error {
-	_, err := l.StreamCompletionWithOptions(ctx, messages, ChatCompletionOptions{
-		ExcludeReasoning: true,
-	}, onChunk)
+	_, err := l.StreamCompletionWithOptions(ctx, messages, ChatCompletionOptions{}, onChunk)
 	return err
 }
 
@@ -231,8 +261,12 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, activity bool, err error) {
 	var chunk struct {
 		Error *struct {
-			Message string `json:"message"`
-			Code    any    `json:"code"`
+			Message  string `json:"message"`
+			Code     any    `json:"code"`
+			Metadata *struct {
+				Raw          string `json:"raw"`
+				ProviderName string `json:"provider_name"`
+			} `json:"metadata"`
 		} `json:"error"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
@@ -253,11 +287,12 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		return "", nil, false, nil
 	}
 	if chunk.Error != nil {
-		msg := strings.TrimSpace(chunk.Error.Message)
-		if msg == "" {
-			msg = "provider stream error"
+		raw, provider := "", ""
+		if chunk.Error.Metadata != nil {
+			raw = chunk.Error.Metadata.Raw
+			provider = chunk.Error.Metadata.ProviderName
 		}
-		return "", nil, false, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+		return "", nil, false, formatOpenRouterError(chunk.Error.Message, raw, provider)
 	}
 	if len(chunk.Choices) == 0 {
 		return "", nil, false, nil
@@ -283,10 +318,42 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 	return text, citations, activity, nil
 }
 
+func formatOpenRouterError(message, raw, providerName string) error {
+	msg := strings.TrimSpace(message)
+	if msg == "" {
+		msg = "provider stream error"
+	}
+	if detail := extractProviderErrorMessage(raw); detail != "" {
+		msg = detail
+	} else if strings.TrimSpace(raw) != "" {
+		msg = msg + ": " + strings.TrimSpace(raw)
+	} else if provider := strings.TrimSpace(providerName); provider != "" {
+		msg = provider + ": " + msg
+	}
+	return fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+}
+
+func extractProviderErrorMessage(raw string) string {
+	var wrapped struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &wrapped); err != nil {
+		return ""
+	}
+	if wrapped.Error != nil {
+		if msg := strings.TrimSpace(wrapped.Error.Message); msg != "" {
+			return msg
+		}
+	}
+	return strings.TrimSpace(wrapped.Message)
+}
+
 func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
 	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{
-		MaxTokens:        2048,
-		ExcludeReasoning: true,
+		MaxTokens: 2048,
 	})
 	if err != nil {
 		return "", err

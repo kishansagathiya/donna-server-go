@@ -9,13 +9,13 @@ import (
 )
 
 func TestParseStreamChunk_midStreamError(t *testing.T) {
-	payload := `{"id":"cmpl-1","error":{"code":"server_error","message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}`
+	payload := `{"id":"cmpl-1","error":{"code":"server_error","message":"Provider returned error","metadata":{"raw":"{\"error\":{\"message\":\"thinking is enabled but reasoning_content is missing\"}}","provider_name":"Moonshot AI"}},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}`
 	_, _, _, err := parseStreamChunk(payload)
 	if err == nil {
 		t.Fatal("expected mid-stream error")
 	}
-	if !strings.Contains(err.Error(), "Provider disconnected unexpectedly") {
-		t.Fatalf("error = %q, want provider message", err.Error())
+	if !strings.Contains(err.Error(), "reasoning_content is missing") {
+		t.Fatalf("error = %q, want upstream detail", err.Error())
 	}
 }
 
