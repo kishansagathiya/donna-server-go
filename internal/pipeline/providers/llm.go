@@ -31,6 +31,16 @@ type LLM struct {
 type ChatCompletionOptions struct {
 	WebSearch           bool
 	WebSearchMaxResults int
+	// MaxTokens caps completion tokens (reasoning + final answer). Zero uses
+	// defaultChatMaxTokens. Reasoning models like kimi-k3 need headroom so
+	// thinking does not consume the entire budget and leave an empty reply.
+	MaxTokens int
+	// ExcludeReasoning asks OpenRouter not to stream reasoning tokens. The
+	// model still thinks when required; we only wait for final content.
+	ExcludeReasoning bool
+	// OnActivity is invoked on OpenRouter keepalives and reasoning-only
+	// deltas so callers can flush SSE heartbeats to the browser.
+	OnActivity func()
 }
 
 type ChatCompletionMetadata struct {
@@ -45,6 +55,8 @@ type WebCitation struct {
 	EndIndex   int
 }
 
+const defaultChatMaxTokens = 8192
+
 func NewLLM(apiKey, model, visionModel string) *LLM {
 	if visionModel == "" {
 		visionModel = model
@@ -53,7 +65,8 @@ func NewLLM(apiKey, model, visionModel string) *LLM {
 		APIKey:      apiKey,
 		Model:       model,
 		VisionModel: visionModel,
-		Client:      &http.Client{Timeout: 120 * time.Second},
+		// Reasoning models (e.g. kimi-k3) can think for minutes before content.
+		Client: &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -96,10 +109,21 @@ func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage st
 }
 
 func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatCompletionOptions) ([]byte, error) {
+	maxTokens := options.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultChatMaxTokens
+	}
 	payload := map[string]any{
-		"model":    l.Model,
-		"messages": messages,
-		"stream":   stream,
+		"model":      l.Model,
+		"messages":   messages,
+		"stream":     stream,
+		"max_tokens": maxTokens,
+	}
+	// Exclude reasoning from the wire format for Donna chat/voice. Kimi K3
+	// reasons at "max" effort by default; streaming that thinking can idle
+	// the client SSE connection and starve content tokens.
+	if options.ExcludeReasoning {
+		payload["reasoning"] = map[string]any{"exclude": true}
 	}
 	if options.WebSearch {
 		maxResults := options.WebSearchMaxResults
@@ -115,7 +139,9 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 }
 
 func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onChunk func(string) error) error {
-	_, err := l.StreamCompletionWithOptions(ctx, messages, ChatCompletionOptions{}, onChunk)
+	_, err := l.StreamCompletionWithOptions(ctx, messages, ChatCompletionOptions{
+		ExcludeReasoning: true,
+	}, onChunk)
 	return err
 }
 
@@ -148,10 +174,19 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	receivedContent := false
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	notifyActivity := func() {
+		if options.OnActivity != nil {
+			options.OnActivity()
+		}
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		// OpenRouter sends SSE comments (e.g. ": OPENROUTER PROCESSING") as keepalives.
-		if strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, ":") {
+			notifyActivity()
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -159,9 +194,12 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			continue
 		}
 
-		text, citations, streamErr := parseStreamChunk(payload)
+		text, citations, activity, streamErr := parseStreamChunk(payload)
 		if streamErr != nil {
 			return ChatCompletionMetadata{}, streamErr
+		}
+		if activity {
+			notifyActivity()
 		}
 		if len(citations) > 0 {
 			meta.WebCitations = appendURLCitations(meta.WebCitations, citations)
@@ -180,7 +218,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 		return ChatCompletionMetadata{}, err
 	}
 	if !receivedContent {
-		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply (model %s). Try another model in Profile, or disable web search", l.Model)
 	}
 	return meta, nil
 }
@@ -188,7 +226,9 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 // parseStreamChunk extracts text deltas and citations from one OpenRouter SSE
 // payload. Mid-stream provider failures arrive as HTTP 200 with an error field
 // and/or finish_reason "error" — those must not be treated as empty success.
-func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, err error) {
+// activity is true when the chunk indicates the model is still working
+// (reasoning tokens) without producing visible content yet.
+func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, activity bool, err error) {
 	var chunk struct {
 		Error *struct {
 			Message string `json:"message"`
@@ -197,8 +237,11 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
-				Content     string                  `json:"content"`
-				Annotations []urlCitationAnnotation `json:"annotations"`
+				Content          string                  `json:"content"`
+				Reasoning        string                  `json:"reasoning"`
+				ReasoningContent string                  `json:"reasoning_content"`
+				ReasoningDetails json.RawMessage         `json:"reasoning_details"`
+				Annotations      []urlCitationAnnotation `json:"annotations"`
 			} `json:"delta"`
 			Message struct {
 				Content     string                  `json:"content"`
@@ -207,24 +250,24 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		} `json:"choices"`
 	}
 	if unmarshalErr := json.Unmarshal([]byte(payload), &chunk); unmarshalErr != nil {
-		return "", nil, nil
+		return "", nil, false, nil
 	}
 	if chunk.Error != nil {
 		msg := strings.TrimSpace(chunk.Error.Message)
 		if msg == "" {
 			msg = "provider stream error"
 		}
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+		return "", nil, false, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
 	}
 	if len(chunk.Choices) == 0 {
-		return "", nil, nil
+		return "", nil, false, nil
 	}
 	choice := chunk.Choices[0]
 	if strings.EqualFold(choice.FinishReason, "error") {
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
+		return "", nil, false, fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
 	}
 	if strings.EqualFold(choice.FinishReason, "content_filter") {
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
+		return "", nil, false, fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
 	}
 	citations = append(citations, choice.Delta.Annotations...)
 	citations = append(citations, choice.Message.Annotations...)
@@ -232,11 +275,19 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 	if text == "" {
 		text = choice.Message.Content
 	}
-	return text, citations, nil
+	if text == "" {
+		activity = choice.Delta.Reasoning != "" ||
+			choice.Delta.ReasoningContent != "" ||
+			len(choice.Delta.ReasoningDetails) > 0
+	}
+	return text, citations, activity, nil
 }
 
 func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
-	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{})
+	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{
+		MaxTokens:        2048,
+		ExcludeReasoning: true,
+	})
 	if err != nil {
 		return "", err
 	}
