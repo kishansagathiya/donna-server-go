@@ -146,6 +146,7 @@ func (h *Handler) streamReply(
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	writeSSE := func(event, data string) {
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
@@ -156,7 +157,7 @@ func (h *Handler) streamReply(
 
 	result, err := h.Engine.RunTextTurn(r.Context(), grounded.GroundedMessage, history, pipeline.TextTurnCallbacks{
 		OnPhase: func(phase protocol.TurnPhase) {
-			writeSSE("phase", string(phase))
+			writeSSE("phase", mustJSON(string(phase)))
 		},
 		OnReply: func(text string) {
 			writeSSE("chunk", mustJSON(map[string]string{"text": text}))

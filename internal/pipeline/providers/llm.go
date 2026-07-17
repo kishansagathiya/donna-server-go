@@ -24,6 +24,8 @@ type LLM struct {
 	Model       string
 	VisionModel string
 	Client      *http.Client
+	// BaseURL overrides OpenRouter for tests. Empty uses the production API.
+	BaseURL string
 }
 
 type ChatCompletionOptions struct {
@@ -78,6 +80,13 @@ func (l *LLM) headers() map[string]string {
 	}
 }
 
+func (l *LLM) apiBase() string {
+	if strings.TrimSpace(l.BaseURL) != "" {
+		return strings.TrimRight(l.BaseURL, "/")
+	}
+	return openRouterBase
+}
+
 func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage string) []ChatMessage {
 	messages := make([]ChatMessage, 0, len(history)+2)
 	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
@@ -116,7 +125,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 		return ChatCompletionMetadata{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return ChatCompletionMetadata{}, err
 	}
@@ -136,11 +145,13 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	}
 
 	var meta ChatCompletionMetadata
+	receivedContent := false
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		// OpenRouter sends SSE comments (e.g. ": OPENROUTER PROCESSING") as keepalives.
+		if strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -148,34 +159,80 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			continue
 		}
 
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content     string                  `json:"content"`
-					Annotations []urlCitationAnnotation `json:"annotations"`
-				} `json:"delta"`
-				Message struct {
-					Annotations []urlCitationAnnotation `json:"annotations"`
-				} `json:"message"`
-			} `json:"choices"`
+		text, citations, streamErr := parseStreamChunk(payload)
+		if streamErr != nil {
+			return ChatCompletionMetadata{}, streamErr
 		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if len(citations) > 0 {
+			meta.WebCitations = appendURLCitations(meta.WebCitations, citations)
+		}
+		if text == "" {
 			continue
 		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		choice := chunk.Choices[0]
-		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Delta.Annotations)
-		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Message.Annotations)
-		text := choice.Delta.Content
-		if text != "" && onChunk != nil {
+		receivedContent = true
+		if onChunk != nil {
 			if err := onChunk(text); err != nil {
 				return ChatCompletionMetadata{}, err
 			}
 		}
 	}
-	return meta, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return ChatCompletionMetadata{}, err
+	}
+	if !receivedContent {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
+	}
+	return meta, nil
+}
+
+// parseStreamChunk extracts text deltas and citations from one OpenRouter SSE
+// payload. Mid-stream provider failures arrive as HTTP 200 with an error field
+// and/or finish_reason "error" — those must not be treated as empty success.
+func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, err error) {
+	var chunk struct {
+		Error *struct {
+			Message string `json:"message"`
+			Code    any    `json:"code"`
+		} `json:"error"`
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Delta        struct {
+				Content     string                  `json:"content"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
+			} `json:"delta"`
+			Message struct {
+				Content     string                  `json:"content"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(payload), &chunk); unmarshalErr != nil {
+		return "", nil, nil
+	}
+	if chunk.Error != nil {
+		msg := strings.TrimSpace(chunk.Error.Message)
+		if msg == "" {
+			msg = "provider stream error"
+		}
+		return "", nil, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+	}
+	if len(chunk.Choices) == 0 {
+		return "", nil, nil
+	}
+	choice := chunk.Choices[0]
+	if strings.EqualFold(choice.FinishReason, "error") {
+		return "", nil, fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
+	}
+	if strings.EqualFold(choice.FinishReason, "content_filter") {
+		return "", nil, fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
+	}
+	citations = append(citations, choice.Delta.Annotations...)
+	citations = append(citations, choice.Message.Annotations...)
+	text = choice.Delta.Content
+	if text == "" {
+		text = choice.Message.Content
+	}
+	return text, citations, nil
 }
 
 func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
@@ -184,7 +241,7 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -204,8 +261,12 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 	}
 
 	var out struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -213,10 +274,24 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		return "", err
 	}
-	if len(out.Choices) == 0 {
-		return "", nil
+	if out.Error != nil {
+		msg := strings.TrimSpace(out.Error.Message)
+		if msg == "" {
+			msg = "provider error"
+		}
+		return "", fmt.Errorf("OpenRouter LLM error: %s", msg)
 	}
-	return strings.TrimSpace(out.Choices[0].Message.Content), nil
+	if len(out.Choices) == 0 {
+		return "", fmt.Errorf("OpenRouter LLM returned an empty reply")
+	}
+	if strings.EqualFold(out.Choices[0].FinishReason, "content_filter") {
+		return "", fmt.Errorf("OpenRouter LLM error: response blocked by content filter")
+	}
+	content := strings.TrimSpace(out.Choices[0].Message.Content)
+	if content == "" {
+		return "", fmt.Errorf("OpenRouter LLM returned an empty reply")
+	}
+	return content, nil
 }
 
 type urlCitationAnnotation struct {
@@ -279,7 +354,7 @@ func (l *LLM) CompleteOnceVision(ctx context.Context, prompt, imageDataURL strin
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
