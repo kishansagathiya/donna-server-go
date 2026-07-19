@@ -39,6 +39,16 @@ type Config struct {
 	BrowserURL string
 	// ChatToolsEnabled controls mid-turn tools (fetch_url / browse_page). Default true.
 	ChatToolsEnabled bool
+
+	// Integrations feature flags (Granola connector).
+	IntegrationsEnabled bool
+	GranolaEnabled      bool
+	// ConnectorEncryptionKey is base64 of 32 bytes for AES-256-GCM. Required to enable connectors.
+	ConnectorEncryptionKey string
+	// PublicAPIBase is the externally reachable API origin used for OAuth redirect_uri.
+	PublicAPIBase string
+	// WebAppBase is the web app origin for post-OAuth redirects.
+	WebAppBase string
 }
 
 func Load() (*Config, error) {
@@ -144,6 +154,15 @@ func Load() (*Config, error) {
 		chatToolsEnabled = parseBool(raw)
 	}
 
+	integrationsEnabled := parseBool(os.Getenv("DONNA_INTEGRATIONS_ENABLED"))
+	granolaEnabled := parseBool(os.Getenv("DONNA_GRANOLA_ENABLED"))
+	connectorKey := strings.TrimSpace(os.Getenv("DONNA_CONNECTOR_ENCRYPTION_KEY"))
+	publicAPIBase := strings.TrimSpace(os.Getenv("DONNA_PUBLIC_API_BASE"))
+	if publicAPIBase == "" {
+		publicAPIBase = strings.TrimSpace(os.Getenv("DONNA_API_BASE"))
+	}
+	webAppBase := strings.TrimSpace(os.Getenv("DONNA_WEB_APP_BASE"))
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -170,6 +189,11 @@ func Load() (*Config, error) {
 		Personas:               personas,
 		BrowserURL:             browserURL,
 		ChatToolsEnabled:       chatToolsEnabled,
+		IntegrationsEnabled:    integrationsEnabled,
+		GranolaEnabled:         granolaEnabled,
+		ConnectorEncryptionKey: connectorKey,
+		PublicAPIBase:          publicAPIBase,
+		WebAppBase:             webAppBase,
 	}, nil
 }
 

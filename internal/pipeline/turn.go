@@ -51,6 +51,11 @@ type TurnOptions struct {
 	WebSearch bool
 }
 
+// ConnectorToolsFunc merges per-user connector tools into the base registry.
+// Returning nil keeps the base registry unchanged. Failures must degrade
+// gracefully (return base or nil) so chat continues without connectors.
+type ConnectorToolsFunc func(ctx context.Context, userID string, base *tools.Registry) *tools.Registry
+
 type Engine struct {
 	Config      *config.Config
 	STT         *providers.STT
@@ -60,6 +65,9 @@ type Engine struct {
 	Notes       *storage.Notes
 	Preferences *storage.Preferences
 	Tools       *tools.Registry
+	// ConnectorTools optionally adds per-user live connector tools for text chat.
+	ConnectorTools  ConnectorToolsFunc
+	ConnectorPrompt string
 }
 
 func (e *Engine) RunVoiceTurn(
