@@ -68,6 +68,7 @@ func TestRunToolLoop_executesFetchThenAnswers(t *testing.T) {
 	})
 
 	var phases []protocol.TurnPhase
+	var statusHosts []string
 	result, err := RunToolLoop(
 		context.Background(),
 		llm,
@@ -77,6 +78,10 @@ func TestRunToolLoop_executesFetchThenAnswers(t *testing.T) {
 		LoopLimits{MaxRounds: 3},
 		LoopCallbacks{
 			OnPhase: func(p protocol.TurnPhase) { phases = append(phases, p) },
+			OnStatus: func(p protocol.TurnPhase, host string) {
+				phases = append(phases, p)
+				statusHosts = append(statusHosts, host)
+			},
 			OnReply: func(text string) error { return nil },
 		},
 	)
@@ -93,13 +98,30 @@ func TestRunToolLoop_executesFetchThenAnswers(t *testing.T) {
 		t.Fatalf("expected at least 2 LLM calls, got %d", calls.Load())
 	}
 	sawFetch := false
+	sawFinish := false
 	for _, p := range phases {
 		if p == protocol.TurnPhaseFetching {
 			sawFetch = true
 		}
+		if p == protocol.TurnPhaseFinishing {
+			sawFinish = true
+		}
 	}
 	if !sawFetch {
 		t.Fatalf("expected fetching phase, got %#v", phases)
+	}
+	if !sawFinish {
+		t.Fatalf("expected finishing phase, got %#v", phases)
+	}
+	foundHost := false
+	for _, h := range statusHosts {
+		if h == "example.com" {
+			foundHost = true
+			break
+		}
+	}
+	if !foundHost {
+		t.Fatalf("expected example.com status host, got %#v", statusHosts)
 	}
 }
 

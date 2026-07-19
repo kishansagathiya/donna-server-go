@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -68,15 +69,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grounded, err := groundChatTurn(body.Message, body.Attachments)
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":   "invalid_attachments",
-			"message": err.Error(),
-		})
-		return
-	}
-
 	sessionID := strings.TrimSpace(body.SessionID)
 	if sessionID == "" {
 		sessionID = uuid.NewString()
@@ -89,7 +81,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := pipeline.ParseMode(body.Mode)
 
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, grounded, body.Attachments, history, persistHistory, mode, body.WebSearch)
+		h.streamReply(w, r, userID, sessionID, body, history, persistHistory, mode)
+		return
+	}
+
+	grounded, err := groundChatTurn(body.Message, body.Attachments)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":   "invalid_attachments",
+			"message": err.Error(),
+		})
 		return
 	}
 
@@ -128,12 +129,10 @@ func (h *Handler) streamReply(
 	w http.ResponseWriter,
 	r *http.Request,
 	userID, sessionID string,
-	grounded groundedTurn,
-	attachments []ChatAttachment,
+	body chatRequest,
 	history []providers.ChatMessage,
 	persistHistory []providers.ChatMessage,
 	mode pipeline.InteractionMode,
-	webSearch bool,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -153,12 +152,34 @@ func (h *Handler) streamReply(
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 		flusher.Flush()
 	}
+	writePhase := func(phase protocol.TurnPhase, host string) {
+		payload := map[string]any{"phase": string(phase)}
+		if host = strings.TrimSpace(host); host != "" {
+			payload["host"] = host
+		}
+		writeSSE("phase", mustJSON(payload))
+	}
 
 	writeSSE("session", mustJSON(map[string]string{"session_id": sessionID}))
 
+	// Ground attachments after the stream opens so the UI can show progress
+	// during vision / URL extraction (often the slowest pre-LLM step).
+	if phase, host := previewGroundingStatus(body.Message, body.Attachments); phase != "" {
+		writePhase(phase, host)
+	}
+
+	grounded, err := groundChatTurn(body.Message, body.Attachments)
+	if err != nil {
+		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
+		return
+	}
+
 	result, err := h.Engine.RunTextTurn(r.Context(), grounded.GroundedMessage, history, pipeline.TextTurnCallbacks{
 		OnPhase: func(phase protocol.TurnPhase) {
-			writeSSE("phase", mustJSON(string(phase)))
+			writePhase(phase, "")
+		},
+		OnStatus: func(phase protocol.TurnPhase, host string) {
+			writePhase(phase, host)
 		},
 		OnReply: func(text string) {
 			writeSSE("chunk", mustJSON(map[string]string{"text": text}))
@@ -167,7 +188,7 @@ func (h *Handler) streamReply(
 		UserID:    userID,
 		SessionID: sessionID,
 		Mode:      mode,
-		WebSearch: webSearch,
+		WebSearch: body.WebSearch,
 	})
 	if err != nil {
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
@@ -179,7 +200,7 @@ func (h *Handler) streamReply(
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, grounded, attachments, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, grounded, body.Attachments, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
@@ -334,6 +355,45 @@ func wantsStream(r *http.Request) bool {
 	}
 	accept := r.Header.Get("Accept")
 	return strings.Contains(accept, "text/event-stream")
+}
+
+// previewGroundingStatus returns a user-visible phase before attachment grounding.
+func previewGroundingStatus(message string, attachments []ChatAttachment) (protocol.TurnPhase, string) {
+	hasImage := false
+	var urlHost string
+	for _, att := range attachments {
+		kind := strings.ToLower(strings.TrimSpace(att.Kind))
+		mime := strings.ToLower(strings.TrimSpace(att.Mime))
+		if kind == "image" || strings.HasPrefix(mime, "image/") {
+			hasImage = true
+			continue
+		}
+		if kind == "url" && urlHost == "" {
+			urlHost = hostFromRawURL(att.URL)
+		}
+	}
+	if hasImage {
+		return protocol.TurnPhaseAnalyzing, ""
+	}
+	if urlHost != "" {
+		return protocol.TurnPhaseFetching, urlHost
+	}
+	if u := loneURL(message); u != "" {
+		return protocol.TurnPhaseFetching, hostFromRawURL(u)
+	}
+	return "", ""
+}
+
+func hostFromRawURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Host)
 }
 
 func mustJSON(v any) string {

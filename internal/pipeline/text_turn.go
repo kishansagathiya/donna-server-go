@@ -13,8 +13,9 @@ import (
 )
 
 type TextTurnCallbacks struct {
-	OnPhase func(protocol.TurnPhase)
-	OnReply func(string)
+	OnPhase  func(protocol.TurnPhase)
+	OnStatus func(phase protocol.TurnPhase, host string)
+	OnReply  func(string)
 }
 
 func (e *Engine) RunTextTurn(
@@ -28,6 +29,10 @@ func (e *Engine) RunTextTurn(
 	timings := protocol.EmptyTurnTimings()
 
 	phase := func(p protocol.TurnPhase) {
+		if callbacks.OnStatus != nil {
+			callbacks.OnStatus(p, "")
+			return
+		}
 		if callbacks.OnPhase != nil {
 			callbacks.OnPhase(p)
 		}
@@ -106,7 +111,8 @@ func (e *Engine) RunTextTurn(
 	var toolCitations []tools.Citation
 	if toolsEnabled {
 		loopResult, err := tools.RunToolLoop(ctx, llm, messages, e.Tools, baseOpts, tools.LoopLimits{}, tools.LoopCallbacks{
-			OnPhase: phase,
+			OnPhase:  phase,
+			OnStatus: callbacks.OnStatus,
 			OnReply: func(text string) error {
 				if err := ctx.Err(); err != nil {
 					return err
