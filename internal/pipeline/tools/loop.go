@@ -194,11 +194,11 @@ func RunToolLoop(
 				})
 			}
 
-			// Model has page context; next LLM call is the closing answer.
+			// Back to the model — it may answer or call another tool.
 			if callbacks.OnStatus != nil {
-				callbacks.OnStatus(protocol.TurnPhaseFinishing, "")
+				callbacks.OnStatus(protocol.TurnPhaseGenerating, "")
 			} else if callbacks.OnPhase != nil {
-				callbacks.OnPhase(protocol.TurnPhaseFinishing)
+				callbacks.OnPhase(protocol.TurnPhaseGenerating)
 			}
 			continue
 		}

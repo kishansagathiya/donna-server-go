@@ -15,7 +15,6 @@ const (
 	TurnPhaseAnalyzing    TurnPhase = "analyzing"
 	TurnPhaseFetching     TurnPhase = "fetching"
 	TurnPhaseBrowsing     TurnPhase = "browsing"
-	TurnPhaseFinishing    TurnPhase = "finishing"
 	TurnPhaseSynthesizing TurnPhase = "synthesizing"
 	TurnPhaseDone         TurnPhase = "done"
 	TurnPhaseError        TurnPhase = "error"

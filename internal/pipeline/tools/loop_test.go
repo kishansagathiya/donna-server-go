@@ -98,20 +98,20 @@ func TestRunToolLoop_executesFetchThenAnswers(t *testing.T) {
 		t.Fatalf("expected at least 2 LLM calls, got %d", calls.Load())
 	}
 	sawFetch := false
-	sawFinish := false
+	sawGenerating := false
 	for _, p := range phases {
 		if p == protocol.TurnPhaseFetching {
 			sawFetch = true
 		}
-		if p == protocol.TurnPhaseFinishing {
-			sawFinish = true
+		if p == protocol.TurnPhaseGenerating {
+			sawGenerating = true
 		}
 	}
 	if !sawFetch {
 		t.Fatalf("expected fetching phase, got %#v", phases)
 	}
-	if !sawFinish {
-		t.Fatalf("expected finishing phase, got %#v", phases)
+	if !sawGenerating {
+		t.Fatalf("expected generating phase after tools, got %#v", phases)
 	}
 	foundHost := false
 	for _, h := range statusHosts {
