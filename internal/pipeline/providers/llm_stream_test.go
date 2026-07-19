@@ -10,7 +10,7 @@ import (
 
 func TestParseStreamChunk_midStreamError(t *testing.T) {
 	payload := `{"id":"cmpl-1","error":{"code":"server_error","message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}`
-	_, _, err := parseStreamChunk(payload)
+	_, _, _, _, err := parseStreamChunk(payload)
 	if err == nil {
 		t.Fatal("expected mid-stream error")
 	}
@@ -21,7 +21,7 @@ func TestParseStreamChunk_midStreamError(t *testing.T) {
 
 func TestParseStreamChunk_contentFilter(t *testing.T) {
 	payload := `{"choices":[{"index":0,"delta":{"content":""},"finish_reason":"content_filter"}]}`
-	_, _, err := parseStreamChunk(payload)
+	_, _, _, _, err := parseStreamChunk(payload)
 	if err == nil {
 		t.Fatal("expected content filter error")
 	}
@@ -29,7 +29,7 @@ func TestParseStreamChunk_contentFilter(t *testing.T) {
 
 func TestParseStreamChunk_contentDelta(t *testing.T) {
 	payload := `{"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`
-	text, _, err := parseStreamChunk(payload)
+	text, _, _, _, err := parseStreamChunk(payload)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,33 @@ import (
 const openRouterBase = "https://openrouter.ai/api/v1"
 
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolDefinition struct {
+	Type     string             `json:"type"`
+	Function ToolFunctionSchema `json:"function"`
+}
+
+type ToolFunctionSchema struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type LLM struct {
@@ -31,10 +56,15 @@ type LLM struct {
 type ChatCompletionOptions struct {
 	WebSearch           bool
 	WebSearchMaxResults int
+	Tools               []ToolDefinition
+	ToolChoice          any // "auto" | "none" | map
 }
 
 type ChatCompletionMetadata struct {
 	WebCitations []WebCitation
+	ToolCalls    []ToolCall
+	FinishReason string
+	Content      string
 }
 
 type WebCitation struct {
@@ -111,6 +141,14 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 			"max_results": maxResults,
 		}}
 	}
+	if len(options.Tools) > 0 {
+		payload["tools"] = options.Tools
+		if options.ToolChoice != nil {
+			payload["tool_choice"] = options.ToolChoice
+		} else {
+			payload["tool_choice"] = "auto"
+		}
+	}
 	return json.Marshal(payload)
 }
 
@@ -145,6 +183,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	}
 
 	var meta ChatCompletionMetadata
+	toolAcc := map[int]*ToolCall{}
 	receivedContent := false
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -159,17 +198,22 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			continue
 		}
 
-		text, citations, streamErr := parseStreamChunk(payload)
+		text, citations, toolDeltas, finishReason, streamErr := parseStreamChunk(payload)
 		if streamErr != nil {
 			return ChatCompletionMetadata{}, streamErr
 		}
 		if len(citations) > 0 {
 			meta.WebCitations = appendURLCitations(meta.WebCitations, citations)
 		}
+		if finishReason != "" {
+			meta.FinishReason = finishReason
+		}
+		accumulateToolCallDeltas(toolAcc, toolDeltas)
 		if text == "" {
 			continue
 		}
 		receivedContent = true
+		meta.Content += text
 		if onChunk != nil {
 			if err := onChunk(text); err != nil {
 				return ChatCompletionMetadata{}, err
@@ -179,16 +223,24 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	if err := scanner.Err(); err != nil {
 		return ChatCompletionMetadata{}, err
 	}
-	if !receivedContent {
+	meta.ToolCalls = toolCallsFromAccumulator(toolAcc)
+	if meta.FinishReason == "" {
+		if len(meta.ToolCalls) > 0 {
+			meta.FinishReason = "tool_calls"
+		} else {
+			meta.FinishReason = "stop"
+		}
+	}
+	if !receivedContent && len(meta.ToolCalls) == 0 {
 		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
 	}
 	return meta, nil
 }
 
-// parseStreamChunk extracts text deltas and citations from one OpenRouter SSE
-// payload. Mid-stream provider failures arrive as HTTP 200 with an error field
-// and/or finish_reason "error" — those must not be treated as empty success.
-func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, err error) {
+// parseStreamChunk extracts text deltas, citations, and tool-call deltas from one
+// OpenRouter SSE payload. Mid-stream provider failures arrive as HTTP 200 with an
+// error field and/or finish_reason "error" — those must not be treated as empty success.
+func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, toolDeltas []streamToolCallDelta, finishReason string, err error) {
 	var chunk struct {
 		Error *struct {
 			Message string `json:"message"`
@@ -198,6 +250,7 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
 				Content     string                  `json:"content"`
+				ToolCalls   []streamToolCallDelta   `json:"tool_calls"`
 				Annotations []urlCitationAnnotation `json:"annotations"`
 			} `json:"delta"`
 			Message struct {
@@ -207,43 +260,47 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		} `json:"choices"`
 	}
 	if unmarshalErr := json.Unmarshal([]byte(payload), &chunk); unmarshalErr != nil {
-		return "", nil, nil
+		return "", nil, nil, "", nil
 	}
 	if chunk.Error != nil {
 		msg := strings.TrimSpace(chunk.Error.Message)
 		if msg == "" {
 			msg = "provider stream error"
 		}
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: %s", msg)
 	}
 	if len(chunk.Choices) == 0 {
-		return "", nil, nil
+		return "", nil, nil, "", nil
 	}
 	choice := chunk.Choices[0]
 	if strings.EqualFold(choice.FinishReason, "error") {
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
 	}
 	if strings.EqualFold(choice.FinishReason, "content_filter") {
-		return "", nil, fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
 	}
 	citations = append(citations, choice.Delta.Annotations...)
 	citations = append(citations, choice.Message.Annotations...)
+	toolDeltas = choice.Delta.ToolCalls
+	finishReason = strings.TrimSpace(choice.FinishReason)
 	text = choice.Delta.Content
 	if text == "" {
 		text = choice.Message.Content
 	}
-	return text, citations, nil
+	return text, citations, toolDeltas, finishReason, nil
 }
 
-func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
-	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{})
+// CompleteOnceWithOptions runs a non-streaming completion. Used for tool rounds
+// where parsing tool_calls from a full message is simpler than streaming deltas.
+func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessage, options ChatCompletionOptions) (ChatCompletionMetadata, error) {
+	body, err := l.chatRequestBody(messages, false, options)
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	for k, v := range l.headers() {
 		req.Header.Set(k, v)
@@ -251,13 +308,13 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 
 	res, err := l.Client.Do(req)
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return "", fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
 	}
 
 	var out struct {
@@ -267,31 +324,108 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
-				Content string `json:"content"`
+				Content     string                  `json:"content"`
+				ToolCalls   []ToolCall              `json:"tool_calls"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	if out.Error != nil {
 		msg := strings.TrimSpace(out.Error.Message)
 		if msg == "" {
 			msg = "provider error"
 		}
-		return "", fmt.Errorf("OpenRouter LLM error: %s", msg)
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM error: %s", msg)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("OpenRouter LLM returned an empty reply")
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
 	}
-	if strings.EqualFold(out.Choices[0].FinishReason, "content_filter") {
-		return "", fmt.Errorf("OpenRouter LLM error: response blocked by content filter")
+	choice := out.Choices[0]
+	if strings.EqualFold(choice.FinishReason, "content_filter") {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM error: response blocked by content filter")
 	}
-	content := strings.TrimSpace(out.Choices[0].Message.Content)
-	if content == "" {
-		return "", fmt.Errorf("OpenRouter LLM returned an empty reply")
+	meta := ChatCompletionMetadata{
+		Content:      strings.TrimSpace(choice.Message.Content),
+		ToolCalls:    choice.Message.ToolCalls,
+		FinishReason: choice.FinishReason,
+		WebCitations: appendURLCitations(nil, choice.Message.Annotations),
 	}
-	return content, nil
+	if meta.FinishReason == "" {
+		if len(meta.ToolCalls) > 0 {
+			meta.FinishReason = "tool_calls"
+		} else {
+			meta.FinishReason = "stop"
+		}
+	}
+	if meta.Content == "" && len(meta.ToolCalls) == 0 {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
+	}
+	return meta, nil
+}
+
+func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
+	meta, err := l.CompleteOnceWithOptions(ctx, messages, ChatCompletionOptions{})
+	if err != nil {
+		return "", err
+	}
+	return meta.Content, nil
+}
+
+type streamToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func accumulateToolCallDeltas(acc map[int]*ToolCall, deltas []streamToolCallDelta) {
+	for _, delta := range deltas {
+		call, ok := acc[delta.Index]
+		if !ok {
+			call = &ToolCall{Type: "function"}
+			acc[delta.Index] = call
+		}
+		if delta.ID != "" {
+			call.ID = delta.ID
+		}
+		if delta.Type != "" {
+			call.Type = delta.Type
+		}
+		if delta.Function.Name != "" {
+			call.Function.Name = delta.Function.Name
+		}
+		if delta.Function.Arguments != "" {
+			call.Function.Arguments += delta.Function.Arguments
+		}
+	}
+}
+
+func toolCallsFromAccumulator(acc map[int]*ToolCall) []ToolCall {
+	if len(acc) == 0 {
+		return nil
+	}
+	maxIdx := -1
+	for idx := range acc {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	out := make([]ToolCall, 0, len(acc))
+	for i := 0; i <= maxIdx; i++ {
+		if call, ok := acc[i]; ok && call.Function.Name != "" {
+			if call.Type == "" {
+				call.Type = "function"
+			}
+			out = append(out, *call)
+		}
+	}
+	return out
 }
 
 type urlCitationAnnotation struct {

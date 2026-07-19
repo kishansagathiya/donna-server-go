@@ -54,3 +54,33 @@ func TestChatRequestBody_omitsWebPluginByDefault(t *testing.T) {
 		t.Fatalf("plugins should be omitted by default: %#v", got["plugins"])
 	}
 }
+
+func TestChatRequestBody_includesTools(t *testing.T) {
+	llm := NewLLM("test-key", "provider/model", "")
+	body, err := llm.chatRequestBody([]ChatMessage{
+		{Role: "user", Content: "hello"},
+	}, false, ChatCompletionOptions{
+		Tools: []ToolDefinition{{
+			Type: "function",
+			Function: ToolFunctionSchema{
+				Name:        "fetch_url",
+				Description: "Fetch a page",
+				Parameters:  map[string]any{"type": "object"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := got["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", got["tools"])
+	}
+	if got["tool_choice"] != "auto" {
+		t.Fatalf("tool_choice = %#v", got["tool_choice"])
+	}
+}

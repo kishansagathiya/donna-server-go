@@ -8,6 +8,7 @@ import (
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/wav"
@@ -58,6 +59,7 @@ type Engine struct {
 	KB          *storage.Knowledge
 	Notes       *storage.Notes
 	Preferences *storage.Preferences
+	Tools       *tools.Registry
 }
 
 func (e *Engine) RunVoiceTurn(
