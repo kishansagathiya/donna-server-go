@@ -2,17 +2,27 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/google/uuid"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 )
 
-const audioBucket = "conversation-audio"
+const (
+	audioBucket             = "conversation-audio"
+	ChatAttachmentsBucket   = "chat-attachments"
+	chatAttachmentSignedTTL = 30 * time.Minute
+)
 
 type Conversations struct {
 	DB       *Supabase
@@ -23,16 +33,45 @@ type Conversations struct {
 	OnTurnPersisted func(input SaveTurnInput)
 }
 
+// SaveTurnAttachment is an in-memory attachment to upload/persist with a turn.
+type SaveTurnAttachment struct {
+	Kind     string // "file" | "url"
+	Filename string
+	Mime     string
+	Data     []byte // file bytes (when Kind == "file")
+	URL      string // original URL (when Kind == "url")
+}
+
+// turnAttachmentRow is the persisted JSON shape for conversation_turns.attachments.
+type turnAttachmentRow struct {
+	Kind        string `json:"kind"`
+	Filename    string `json:"filename"`
+	Mime        string `json:"mime,omitempty"`
+	StoragePath string `json:"storage_path,omitempty"`
+	URL         string `json:"url,omitempty"`
+}
+
+// StoredTurnAttachment is returned to clients (storage paths never leave the server).
+type StoredTurnAttachment struct {
+	Kind       string `json:"kind"`
+	Filename   string `json:"filename"`
+	Mime       string `json:"mime,omitempty"`
+	URL        string `json:"url,omitempty"`
+	PreviewURL string `json:"preview_url,omitempty"`
+}
+
 type SaveTurnInput struct {
-	ConversationID       string
-	UserID             string
-	TurnIndex          int
-	UserTranscript     string
-	AssistantTranscript string
-	UserWav            []byte
-	AssistantAudio     []byte
-	AssistantFormat    string
-	Timings            protocol.TurnTimings
+	ConversationID         string
+	UserID                 string
+	TurnIndex              int
+	UserTranscript         string
+	UserGroundedTranscript string
+	AssistantTranscript    string
+	Attachments            []SaveTurnAttachment
+	UserWav                []byte
+	AssistantAudio         []byte
+	AssistantFormat        string
+	Timings                protocol.TurnTimings
 }
 
 func (c *Conversations) Create(ctx context.Context, userID, voiceSessionID string) (string, error) {
@@ -90,9 +129,9 @@ func (c *Conversations) GetOrCreateText(ctx context.Context, userID, clientSessi
 		ID string `json:"id"`
 	}
 	body := map[string]any{
-		"user_id":            userID,
-		"channel":            "text",
-		"client_session_id":  clientSessionID,
+		"user_id":           userID,
+		"channel":           "text",
+		"client_session_id": clientSessionID,
 	}
 	if err := c.DB.Insert(ctx, "conversations", body, &rows); err != nil {
 		return "", err
@@ -168,12 +207,18 @@ func (c *Conversations) SaveTurn(ctx context.Context, input SaveTurnInput) error
 		assistantPath = ""
 	}
 
+	storedAttachments := c.uploadTurnAttachments(ctx, input)
+
 	body := map[string]any{
 		"conversation_id":      input.ConversationID,
 		"turn_index":           input.TurnIndex,
 		"user_transcript":      input.UserTranscript,
 		"assistant_transcript": input.AssistantTranscript,
 		"timings":              input.Timings,
+		"attachments":          storedAttachments,
+	}
+	if grounded := strings.TrimSpace(input.UserGroundedTranscript); grounded != "" {
+		body["user_grounded_transcript"] = grounded
 	}
 	if userPath != "" {
 		body["user_audio_path"] = userPath
@@ -270,10 +315,12 @@ type ConversationSummary struct {
 }
 
 type StoredTurn struct {
-	TurnIndex           int    `json:"turn_index"`
-	UserTranscript      string `json:"user_transcript"`
-	AssistantTranscript string `json:"assistant_transcript"`
-	CreatedAt           string `json:"created_at"`
+	TurnIndex              int                    `json:"turn_index"`
+	UserTranscript         string                 `json:"user_transcript"`
+	UserGroundedTranscript string                 `json:"user_grounded_transcript,omitempty"`
+	AssistantTranscript    string                 `json:"assistant_transcript"`
+	CreatedAt              string                 `json:"created_at"`
+	Attachments            []StoredTurnAttachment `json:"attachments,omitempty"`
 }
 
 type ConversationDetail struct {
@@ -643,15 +690,203 @@ func (c *Conversations) GetWithTurns(ctx context.Context, userID, conversationID
 
 func (c *Conversations) loadTurns(ctx context.Context, conversationID string) ([]StoredTurn, error) {
 	q := url.Values{}
-	q.Set("select", "turn_index,user_transcript,assistant_transcript,created_at")
+	q.Set("select", "turn_index,user_transcript,user_grounded_transcript,assistant_transcript,created_at,attachments")
 	q.Set("conversation_id", "eq."+conversationID)
 	q.Set("order", "turn_index.asc")
 
-	var rows []StoredTurn
+	var rows []struct {
+		TurnIndex              int             `json:"turn_index"`
+		UserTranscript         string          `json:"user_transcript"`
+		UserGroundedTranscript *string         `json:"user_grounded_transcript"`
+		AssistantTranscript    string          `json:"assistant_transcript"`
+		CreatedAt              string          `json:"created_at"`
+		Attachments            json.RawMessage `json:"attachments"`
+	}
 	if err := c.DB.Get(ctx, "conversation_turns", q, &rows); err != nil {
 		return nil, err
 	}
-	return rows, nil
+
+	out := make([]StoredTurn, 0, len(rows))
+	for _, row := range rows {
+		turn := StoredTurn{
+			TurnIndex:           row.TurnIndex,
+			UserTranscript:      row.UserTranscript,
+			AssistantTranscript: row.AssistantTranscript,
+			CreatedAt:           row.CreatedAt,
+		}
+		if row.UserGroundedTranscript != nil {
+			turn.UserGroundedTranscript = strings.TrimSpace(*row.UserGroundedTranscript)
+		}
+		turn.Attachments = c.signTurnAttachments(ctx, row.Attachments)
+		out = append(out, turn)
+	}
+	return out, nil
+}
+
+func (c *Conversations) uploadTurnAttachments(ctx context.Context, input SaveTurnInput) []turnAttachmentRow {
+	if len(input.Attachments) == 0 {
+		return []turnAttachmentRow{}
+	}
+	out := make([]turnAttachmentRow, 0, len(input.Attachments))
+	for i, att := range input.Attachments {
+		kind := strings.ToLower(strings.TrimSpace(att.Kind))
+		filename := strings.TrimSpace(att.Filename)
+		if filename == "" {
+			filename = "attachment"
+		}
+		row := turnAttachmentRow{
+			Kind:     kind,
+			Filename: filename,
+			Mime:     strings.TrimSpace(att.Mime),
+		}
+		switch kind {
+		case "url":
+			row.URL = strings.TrimSpace(att.URL)
+			if row.URL == "" {
+				continue
+			}
+			out = append(out, row)
+		case "file", "image", "":
+			row.Kind = "file"
+			if len(att.Data) == 0 {
+				out = append(out, row)
+				continue
+			}
+			if c.DB == nil || !c.DB.Enabled() {
+				out = append(out, row)
+				continue
+			}
+			objectPath := chatAttachmentObjectPath(input.UserID, input.ConversationID, input.TurnIndex, i, filename, row.Mime)
+			mime := row.Mime
+			if mime == "" {
+				mime = "application/octet-stream"
+			}
+			if err := c.DB.UploadStorage(ctx, ChatAttachmentsBucket, objectPath, mime, att.Data); err != nil {
+				log.Warn("chat attachment upload failed — saving metadata without file", map[string]any{
+					"conversationId": input.ConversationID,
+					"turnIndex":      input.TurnIndex,
+					"filename":       filename,
+					"error":          err.Error(),
+				})
+			} else {
+				row.StoragePath = objectPath
+			}
+			out = append(out, row)
+		default:
+			continue
+		}
+	}
+	return out
+}
+
+func (c *Conversations) signTurnAttachments(ctx context.Context, raw json.RawMessage) []StoredTurnAttachment {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var rows []turnAttachmentRow
+	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
+		return nil
+	}
+	out := make([]StoredTurnAttachment, 0, len(rows))
+	for _, row := range rows {
+		att := StoredTurnAttachment{
+			Kind:     row.Kind,
+			Filename: row.Filename,
+			Mime:     row.Mime,
+			URL:      row.URL,
+		}
+		if att.Kind == "" {
+			att.Kind = "file"
+		}
+		if path := strings.TrimSpace(row.StoragePath); path != "" && c.DB != nil && c.DB.Enabled() {
+			if strings.HasPrefix(strings.ToLower(att.Mime), "image/") || looksLikeImageFilename(att.Filename) {
+				if signed, err := c.DB.CreateSignedURL(ctx, ChatAttachmentsBucket, path, chatAttachmentSignedTTL); err == nil {
+					att.PreviewURL = signed
+				} else {
+					log.Warn("chat attachment sign failed", map[string]any{
+						"path":  path,
+						"error": err.Error(),
+					})
+				}
+			}
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
+func chatAttachmentObjectPath(userID, conversationID string, turnIndex, attIndex int, filename, mime string) string {
+	safe := sanitizeAttachmentFilename(filename)
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(safe), "."))
+	if ext == "" {
+		ext = extensionForMime(mime)
+	}
+	if ext != "" && !strings.HasSuffix(strings.ToLower(safe), "."+ext) {
+		safe = safe + "." + ext
+	}
+	return path.Join(
+		userID,
+		conversationID,
+		fmt.Sprintf("%d", turnIndex),
+		fmt.Sprintf("%d_%s_%s", attIndex, uuid.NewString(), safe),
+	)
+}
+
+func sanitizeAttachmentFilename(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "attachment"
+	}
+	name = filepath.Base(name)
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			b.WriteRune(r)
+		case r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._")
+	if out == "" {
+		return "attachment"
+	}
+	if len(out) > 80 {
+		out = out[:80]
+	}
+	return out
+}
+
+func extensionForMime(mime string) string {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "image/png":
+		return "png"
+	case "image/jpeg":
+		return "jpg"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	case "application/pdf":
+		return "pdf"
+	case "text/plain":
+		return "txt"
+	case "text/markdown":
+		return "md"
+	default:
+		return ""
+	}
+}
+
+func looksLikeImageFilename(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Conversations) loadTurnsForConversations(ctx context.Context, conversationIDs []string) (map[string][]StoredTurn, error) {

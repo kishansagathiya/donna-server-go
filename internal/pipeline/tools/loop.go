@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -161,6 +163,15 @@ func RunToolLoop(
 					continue
 				}
 
+				// Tell the UI what we're doing before the (often slow) tool runs.
+				if phase, host := peekToolStatus(name, call.Function.Arguments); phase != "" {
+					if callbacks.OnStatus != nil {
+						callbacks.OnStatus(phase, host)
+					} else if callbacks.OnPhase != nil {
+						callbacks.OnPhase(phase)
+					}
+				}
+
 				result, toolErr := tool.Handle(ctx, call.Function.Arguments)
 				if toolErr != nil {
 					working = append(working, toolMessage(call, "Error: "+toolErr.Error()))
@@ -169,12 +180,6 @@ func RunToolLoop(
 						"error": toolErr.Error(),
 					})
 					continue
-				}
-				if result.Phase != "" && callbacks.OnPhase != nil {
-					callbacks.OnPhase(protocol.TurnPhase(result.Phase))
-				}
-				if callbacks.OnStatus != nil && result.Phase != "" {
-					callbacks.OnStatus(protocol.TurnPhase(result.Phase), result.Host)
 				}
 				citations = appendCitations(citations, result.Citations)
 				content := strings.TrimSpace(result.Content)
@@ -189,7 +194,10 @@ func RunToolLoop(
 				})
 			}
 
-			if callbacks.OnPhase != nil {
+			// Back to the model — it may answer or call another tool.
+			if callbacks.OnStatus != nil {
+				callbacks.OnStatus(protocol.TurnPhaseGenerating, "")
+			} else if callbacks.OnPhase != nil {
 				callbacks.OnPhase(protocol.TurnPhaseGenerating)
 			}
 			continue
@@ -309,6 +317,38 @@ func toolMessage(call providers.ToolCall, content string) providers.ChatMessage 
 		Name:       call.Function.Name,
 		Content:    content,
 	}
+}
+
+// peekToolStatus returns a UI phase (+ optional host) before a tool executes.
+func peekToolStatus(name, argsJSON string) (protocol.TurnPhase, string) {
+	switch strings.TrimSpace(name) {
+	case "fetch_url":
+		return protocol.TurnPhaseFetching, peekArgHost(argsJSON)
+	case "browse_page":
+		return protocol.TurnPhaseBrowsing, peekArgHost(argsJSON)
+	default:
+		return "", ""
+	}
+}
+
+func peekArgHost(argsJSON string) string {
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+	raw := strings.TrimSpace(args.URL)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := ValidatePublicURL(raw); err == nil {
+		return parsed.Host
+	}
+	if u, err := url.Parse(raw); err == nil {
+		return strings.TrimSpace(u.Host)
+	}
+	return ""
 }
 
 func webToToolCitations(in []providers.WebCitation) []Citation {

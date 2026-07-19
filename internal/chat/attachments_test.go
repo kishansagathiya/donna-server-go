@@ -85,6 +85,22 @@ func TestGroundChatTurnTooManyAttachments(t *testing.T) {
 	}
 }
 
+func TestSplitGroundedTranscript(t *testing.T) {
+	got, err := groundChatTurn(
+		"What is in this photo?\n\nThe user shared the following attachment(s) for this turn only (not saved to long-term memory unless they ask):\n\nAttached: photo.png\n\nImage: a cat",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.DisplayMessage != "What is in this photo?" {
+		t.Fatalf("DisplayMessage = %q", got.DisplayMessage)
+	}
+	if !strings.Contains(got.GroundedMessage, "Image: a cat") {
+		t.Fatalf("GroundedMessage missing vision text: %q", got.GroundedMessage)
+	}
+}
+
 func TestLoneURL(t *testing.T) {
 	if got := loneURL("https://example.com/doc"); got != "https://example.com/doc" {
 		t.Fatalf("loneURL = %q", got)

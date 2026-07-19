@@ -50,12 +50,46 @@ func TestTextTurnIndex(t *testing.T) {
 
 func TestHandler_persistTurn_skipsWhenDisabled(t *testing.T) {
 	h := &Handler{Conversations: nil}
-	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, false)
+	h.persistTurn("user", "session", groundedTurn{
+		DisplayMessage:  "hi",
+		GroundedMessage: "hi",
+	}, nil, "hello", nil, protocol.TurnTimings{})
 }
 
-func TestHandler_persistTurn_skipsWhenSkipped(t *testing.T) {
+func TestHandler_persistTurn_skipsWhenStoreDisabled(t *testing.T) {
 	h := &Handler{
-		Conversations: &storage.Conversations{Enabled: true},
+		Conversations: &storage.Conversations{Enabled: false},
 	}
-	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, true)
+	h.persistTurn("user", "session", groundedTurn{
+		DisplayMessage:  "hi",
+		GroundedMessage: "hi",
+	}, nil, "hello", nil, protocol.TurnTimings{})
+}
+
+func TestPreviewGroundingStatus(t *testing.T) {
+	phase, host := previewGroundingStatus("hi", []ChatAttachment{{
+		Kind: "image",
+		Mime: "image/png",
+	}})
+	if phase != protocol.TurnPhaseAnalyzing || host != "" {
+		t.Fatalf("image preview = %q %q", phase, host)
+	}
+
+	phase, host = previewGroundingStatus("", []ChatAttachment{{
+		Kind: "url",
+		URL:  "https://example.com/page",
+	}})
+	if phase != protocol.TurnPhaseFetching || host != "example.com" {
+		t.Fatalf("url preview = %q %q", phase, host)
+	}
+
+	phase, host = previewGroundingStatus("https://news.ycombinator.com", nil)
+	if phase != protocol.TurnPhaseFetching || host != "news.ycombinator.com" {
+		t.Fatalf("lone url preview = %q %q", phase, host)
+	}
+
+	phase, host = previewGroundingStatus("just chatting", nil)
+	if phase != "" || host != "" {
+		t.Fatalf("plain text preview = %q %q", phase, host)
+	}
 }

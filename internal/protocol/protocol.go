@@ -8,15 +8,16 @@ import (
 type TurnPhase string
 
 const (
-	TurnPhaseIdle          TurnPhase = "idle"
-	TurnPhaseBusy          TurnPhase = "busy"
-	TurnPhaseTranscribing  TurnPhase = "transcribing"
-	TurnPhaseGenerating    TurnPhase = "generating"
-	TurnPhaseFetching      TurnPhase = "fetching"
-	TurnPhaseBrowsing      TurnPhase = "browsing"
-	TurnPhaseSynthesizing  TurnPhase = "synthesizing"
-	TurnPhaseDone          TurnPhase = "done"
-	TurnPhaseError         TurnPhase = "error"
+	TurnPhaseIdle         TurnPhase = "idle"
+	TurnPhaseBusy         TurnPhase = "busy"
+	TurnPhaseTranscribing TurnPhase = "transcribing"
+	TurnPhaseGenerating   TurnPhase = "generating"
+	TurnPhaseAnalyzing    TurnPhase = "analyzing"
+	TurnPhaseFetching     TurnPhase = "fetching"
+	TurnPhaseBrowsing     TurnPhase = "browsing"
+	TurnPhaseSynthesizing TurnPhase = "synthesizing"
+	TurnPhaseDone         TurnPhase = "done"
+	TurnPhaseError        TurnPhase = "error"
 )
 
 type TurnTimings struct {

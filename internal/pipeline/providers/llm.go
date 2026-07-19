@@ -49,6 +49,8 @@ type LLM struct {
 	Model       string
 	VisionModel string
 	Client      *http.Client
+	// BaseURL overrides OpenRouter for tests. Empty uses the production API.
+	BaseURL string
 }
 
 type ChatCompletionOptions struct {
@@ -108,6 +110,13 @@ func (l *LLM) headers() map[string]string {
 	}
 }
 
+func (l *LLM) apiBase() string {
+	if strings.TrimSpace(l.BaseURL) != "" {
+		return strings.TrimRight(l.BaseURL, "/")
+	}
+	return openRouterBase
+}
+
 func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage string) []ChatMessage {
 	messages := make([]ChatMessage, 0, len(history)+2)
 	messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
@@ -154,7 +163,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 		return ChatCompletionMetadata{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return ChatCompletionMetadata{}, err
 	}
@@ -175,11 +184,13 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 
 	var meta ChatCompletionMetadata
 	toolAcc := map[int]*ToolCall{}
+	receivedContent := false
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		// OpenRouter sends SSE comments (e.g. ": OPENROUTER PROCESSING") as keepalives.
+		if strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -187,39 +198,25 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			continue
 		}
 
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content     string                  `json:"content"`
-					ToolCalls   []streamToolCallDelta   `json:"tool_calls"`
-					Annotations []urlCitationAnnotation `json:"annotations"`
-				} `json:"delta"`
-				Message struct {
-					Annotations []urlCitationAnnotation `json:"annotations"`
-				} `json:"message"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
+		text, citations, toolDeltas, finishReason, streamErr := parseStreamChunk(payload)
+		if streamErr != nil {
+			return ChatCompletionMetadata{}, streamErr
 		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if len(citations) > 0 {
+			meta.WebCitations = appendURLCitations(meta.WebCitations, citations)
+		}
+		if finishReason != "" {
+			meta.FinishReason = finishReason
+		}
+		accumulateToolCallDeltas(toolAcc, toolDeltas)
+		if text == "" {
 			continue
 		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		choice := chunk.Choices[0]
-		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Delta.Annotations)
-		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Message.Annotations)
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			meta.FinishReason = *choice.FinishReason
-		}
-		accumulateToolCallDeltas(toolAcc, choice.Delta.ToolCalls)
-		text := choice.Delta.Content
-		if text != "" {
-			meta.Content += text
-			if onChunk != nil {
-				if err := onChunk(text); err != nil {
-					return ChatCompletionMetadata{}, err
-				}
+		receivedContent = true
+		meta.Content += text
+		if onChunk != nil {
+			if err := onChunk(text); err != nil {
+				return ChatCompletionMetadata{}, err
 			}
 		}
 	}
@@ -234,7 +231,63 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			meta.FinishReason = "stop"
 		}
 	}
+	if !receivedContent && len(meta.ToolCalls) == 0 {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
+	}
 	return meta, nil
+}
+
+// parseStreamChunk extracts text deltas, citations, and tool-call deltas from one
+// OpenRouter SSE payload. Mid-stream provider failures arrive as HTTP 200 with an
+// error field and/or finish_reason "error" — those must not be treated as empty success.
+func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, toolDeltas []streamToolCallDelta, finishReason string, err error) {
+	var chunk struct {
+		Error *struct {
+			Message string `json:"message"`
+			Code    any    `json:"code"`
+		} `json:"error"`
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Delta        struct {
+				Content     string                  `json:"content"`
+				ToolCalls   []streamToolCallDelta   `json:"tool_calls"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
+			} `json:"delta"`
+			Message struct {
+				Content     string                  `json:"content"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(payload), &chunk); unmarshalErr != nil {
+		return "", nil, nil, "", nil
+	}
+	if chunk.Error != nil {
+		msg := strings.TrimSpace(chunk.Error.Message)
+		if msg == "" {
+			msg = "provider stream error"
+		}
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+	}
+	if len(chunk.Choices) == 0 {
+		return "", nil, nil, "", nil
+	}
+	choice := chunk.Choices[0]
+	if strings.EqualFold(choice.FinishReason, "error") {
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
+	}
+	if strings.EqualFold(choice.FinishReason, "content_filter") {
+		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
+	}
+	citations = append(citations, choice.Delta.Annotations...)
+	citations = append(citations, choice.Message.Annotations...)
+	toolDeltas = choice.Delta.ToolCalls
+	finishReason = strings.TrimSpace(choice.FinishReason)
+	text = choice.Delta.Content
+	if text == "" {
+		text = choice.Message.Content
+	}
+	return text, citations, toolDeltas, finishReason, nil
 }
 
 // CompleteOnceWithOptions runs a non-streaming completion. Used for tool rounds
@@ -245,7 +298,7 @@ func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessag
 		return ChatCompletionMetadata{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return ChatCompletionMetadata{}, err
 	}
@@ -265,6 +318,9 @@ func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessag
 	}
 
 	var out struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
@@ -277,10 +333,20 @@ func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessag
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		return ChatCompletionMetadata{}, err
 	}
+	if out.Error != nil {
+		msg := strings.TrimSpace(out.Error.Message)
+		if msg == "" {
+			msg = "provider error"
+		}
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM error: %s", msg)
+	}
 	if len(out.Choices) == 0 {
-		return ChatCompletionMetadata{}, nil
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
 	}
 	choice := out.Choices[0]
+	if strings.EqualFold(choice.FinishReason, "content_filter") {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM error: response blocked by content filter")
+	}
 	meta := ChatCompletionMetadata{
 		Content:      strings.TrimSpace(choice.Message.Content),
 		ToolCalls:    choice.Message.ToolCalls,
@@ -293,6 +359,9 @@ func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessag
 		} else {
 			meta.FinishReason = "stop"
 		}
+	}
+	if meta.Content == "" && len(meta.ToolCalls) == 0 {
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
 	}
 	return meta, nil
 }
@@ -419,7 +488,7 @@ func (l *LLM) CompleteOnceVision(ctx context.Context, prompt, imageDataURL strin
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.apiBase()+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 const (
@@ -67,6 +68,19 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 		return groundedTurn{}, fmt.Errorf("message cannot be empty")
 	}
 
+	// Regenerate/retry may re-send a previously grounded transcript with no
+	// attachment payloads. Recover the short user-facing prompt so we don't
+	// persist the vision dump as user_transcript again.
+	if len(blocks) == 0 {
+		if display, groundedMsg, ok := splitGroundedTranscript(message); ok {
+			return groundedTurn{
+				DisplayMessage:  display,
+				GroundedMessage: groundedMsg,
+				Labels:          labels,
+			}, nil
+		}
+	}
+
 	display := message
 	if len(labels) > 0 {
 		joined := strings.Join(labels, ", ")
@@ -81,9 +95,9 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 	if len(blocks) > 0 {
 		joined := strings.Join(blocks, "\n\n---\n\n")
 		if grounded == "" {
-			grounded = "The user shared the following attachment(s) for this turn only (not saved to long-term memory unless they ask):\n\n" + joined
+			grounded = groundedAttachmentPreamble + joined
 		} else {
-			grounded = grounded + "\n\nThe user shared the following attachment(s) for this turn only (not saved to long-term memory unless they ask):\n\n" + joined
+			grounded = grounded + "\n\n" + groundedAttachmentPreamble + joined
 		}
 	}
 
@@ -92,6 +106,37 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 		GroundedMessage: grounded,
 		Labels:          labels,
 	}, nil
+}
+
+const groundedAttachmentPreamble = "The user shared the following attachment(s) for this turn only (not saved to long-term memory unless they ask):\n\n"
+
+func splitGroundedTranscript(message string) (display, grounded string, ok bool) {
+	grounded = strings.TrimSpace(message)
+	if grounded == "" {
+		return "", "", false
+	}
+	idx := strings.Index(grounded, "The user shared the following attachment(s) for this turn only")
+	if idx < 0 {
+		return "", "", false
+	}
+	before := strings.TrimSpace(grounded[:idx])
+	if before != "" {
+		return before, grounded, true
+	}
+	var labels []string
+	for _, line := range strings.Split(grounded, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Attached:") {
+			label := strings.TrimSpace(strings.TrimPrefix(line, "Attached:"))
+			if label != "" {
+				labels = append(labels, label)
+			}
+		}
+	}
+	if len(labels) == 0 {
+		return "📎 attachment", grounded, true
+	}
+	return "📎 " + strings.Join(labels, ", "), grounded, true
 }
 
 func extractAttachment(att ChatAttachment) (label, content string, err error) {
@@ -107,21 +152,9 @@ func extractAttachment(att ChatAttachment) (label, content string, err error) {
 }
 
 func extractFileAttachment(att ChatAttachment) (label, content string, err error) {
-	raw := strings.TrimSpace(att.DataBase64)
-	if raw == "" {
-		return "", "", fmt.Errorf("file attachment requires data_base64")
-	}
-	// Allow data URL prefix if clients send one.
-	if idx := strings.Index(raw, "base64,"); idx >= 0 {
-		raw = raw[idx+len("base64,"):]
-	}
-	buf, err := base64.StdEncoding.DecodeString(raw)
+	buf, err := decodeAttachmentBase64(att.DataBase64)
 	if err != nil {
-		// Some clients use raw URL-encoding-safe base64.
-		buf, err = base64.RawStdEncoding.DecodeString(raw)
-		if err != nil {
-			return "", "", fmt.Errorf("invalid base64 data")
-		}
+		return "", "", err
 	}
 	if len(buf) == 0 {
 		return "", "", fmt.Errorf("empty file")
@@ -143,6 +176,68 @@ func extractFileAttachment(att ChatAttachment) (label, content string, err error
 		return "", "", fmt.Errorf("no content extracted from %s", filename)
 	}
 	return filename, text, nil
+}
+
+func decodeAttachmentBase64(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("file attachment requires data_base64")
+	}
+	// Allow data URL prefix if clients send one.
+	if idx := strings.Index(raw, "base64,"); idx >= 0 {
+		raw = raw[idx+len("base64,"):]
+	}
+	buf, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		// Some clients use raw URL-encoding-safe base64.
+		buf, err = base64.RawStdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid base64 data")
+		}
+	}
+	return buf, nil
+}
+
+// toSaveTurnAttachments copies request attachments into storage upload payloads.
+func toSaveTurnAttachments(attachments []ChatAttachment) []storage.SaveTurnAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]storage.SaveTurnAttachment, 0, len(attachments))
+	for _, att := range attachments {
+		kind := strings.ToLower(strings.TrimSpace(att.Kind))
+		filename := strings.TrimSpace(att.Filename)
+		switch kind {
+		case "url":
+			u := strings.TrimSpace(att.URL)
+			if u == "" {
+				continue
+			}
+			if filename == "" {
+				filename = u
+			}
+			out = append(out, storage.SaveTurnAttachment{
+				Kind:     "url",
+				Filename: filename,
+				URL:      u,
+			})
+		case "file", "image", "":
+			data, err := decodeAttachmentBase64(att.DataBase64)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			if filename == "" {
+				filename = "attachment"
+			}
+			out = append(out, storage.SaveTurnAttachment{
+				Kind:     "file",
+				Filename: filename,
+				Mime:     strings.TrimSpace(att.Mime),
+				Data:     data,
+			})
+		}
+	}
+	return out
 }
 
 func extractURLAttachment(rawURL string) (label, content string, err error) {
