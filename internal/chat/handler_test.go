@@ -50,12 +50,18 @@ func TestTextTurnIndex(t *testing.T) {
 
 func TestHandler_persistTurn_skipsWhenDisabled(t *testing.T) {
 	h := &Handler{Conversations: nil}
-	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, false)
+	h.persistTurn("user", "session", groundedTurn{
+		DisplayMessage:  "hi",
+		GroundedMessage: "hi",
+	}, nil, "hello", nil, protocol.TurnTimings{})
 }
 
-func TestHandler_persistTurn_skipsWhenSkipped(t *testing.T) {
+func TestHandler_persistTurn_skipsWhenStoreDisabled(t *testing.T) {
 	h := &Handler{
-		Conversations: &storage.Conversations{Enabled: true},
+		Conversations: &storage.Conversations{Enabled: false},
 	}
-	h.persistTurn("user", "session", "hi", "hello", nil, protocol.TurnTimings{}, true)
+	h.persistTurn("user", "session", groundedTurn{
+		DisplayMessage:  "hi",
+		GroundedMessage: "hi",
+	}, nil, "hello", nil, protocol.TurnTimings{})
 }

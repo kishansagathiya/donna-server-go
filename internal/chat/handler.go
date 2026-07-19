@@ -89,7 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := pipeline.ParseMode(body.Mode)
 
 	if wantsStream(r) {
-		h.streamReply(w, r, userID, sessionID, grounded, history, persistHistory, mode, body.WebSearch)
+		h.streamReply(w, r, userID, sessionID, grounded, body.Attachments, history, persistHistory, mode, body.WebSearch)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, grounded.GroundedMessage, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, grounded, body.Attachments, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
@@ -129,6 +129,7 @@ func (h *Handler) streamReply(
 	r *http.Request,
 	userID, sessionID string,
 	grounded groundedTurn,
+	attachments []ChatAttachment,
 	history []providers.ChatMessage,
 	persistHistory []providers.ChatMessage,
 	mode pipeline.InteractionMode,
@@ -178,7 +179,7 @@ func (h *Handler) streamReply(
 		return
 	}
 
-	h.persistAfterTurn(r.Context(), userID, sessionID, grounded.GroundedMessage, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
+	h.persistAfterTurn(r.Context(), userID, sessionID, grounded, attachments, result.ReplyText, persistHistory, result.Timings, result.Skipped, mode)
 
 	reply := result.ReplyText
 	if mode.IsNotes() {
@@ -229,7 +230,10 @@ func (h *Handler) packHistory(ctx context.Context, history []providers.ChatMessa
 
 func (h *Handler) persistAfterTurn(
 	ctx context.Context,
-	userID, sessionID, userMessage, assistantMessage string,
+	userID, sessionID string,
+	grounded groundedTurn,
+	attachments []ChatAttachment,
+	assistantMessage string,
 	history []providers.ChatMessage,
 	timings protocol.TurnTimings,
 	skipped bool,
@@ -238,12 +242,15 @@ func (h *Handler) persistAfterTurn(
 	if skipped {
 		return
 	}
+	// Persist the user-facing prompt for notes/facts — not the vision-grounded
+	// dump (attachments are ephemeral unless the user explicitly asks to save).
+	display := grounded.DisplayMessage
 	if mode.IsNotes() {
-		h.persistNote(ctx, userID, userMessage)
+		h.persistNote(ctx, userID, display)
 		return
 	}
-	h.persistFacts(userID, sessionID, userMessage)
-	h.persistTurn(userID, sessionID, userMessage, assistantMessage, history, timings, skipped)
+	h.persistFacts(userID, sessionID, display)
+	h.persistTurn(userID, sessionID, grounded, attachments, assistantMessage, history, timings)
 }
 
 func (h *Handler) persistNote(ctx context.Context, userID, content string) {
@@ -262,16 +269,19 @@ func (h *Handler) persistNote(ctx context.Context, userID, content string) {
 }
 
 func (h *Handler) persistTurn(
-	userID, sessionID, userMessage, assistantMessage string,
+	userID, sessionID string,
+	grounded groundedTurn,
+	attachments []ChatAttachment,
+	assistantMessage string,
 	history []providers.ChatMessage,
 	timings protocol.TurnTimings,
-	skipped bool,
 ) {
-	if skipped || h.Conversations == nil || !h.Conversations.Enabled {
+	if h.Conversations == nil || !h.Conversations.Enabled {
 		return
 	}
 
 	turnIndex := textTurnIndex(history)
+	saveAttachments := toSaveTurnAttachments(attachments)
 	go func() {
 		ctx := context.Background()
 		conversationID, err := h.Conversations.GetOrCreateText(ctx, userID, sessionID)
@@ -284,12 +294,14 @@ func (h *Handler) persistTurn(
 			return
 		}
 		h.Conversations.PersistTurnAsync(storage.SaveTurnInput{
-			ConversationID:      conversationID,
-			UserID:              userID,
-			TurnIndex:           turnIndex,
-			UserTranscript:      userMessage,
-			AssistantTranscript: assistantMessage,
-			Timings:             timings,
+			ConversationID:         conversationID,
+			UserID:                 userID,
+			TurnIndex:              turnIndex,
+			UserTranscript:         grounded.DisplayMessage,
+			UserGroundedTranscript: grounded.GroundedMessage,
+			AssistantTranscript:    assistantMessage,
+			Attachments:            saveAttachments,
+			Timings:                timings,
 		})
 	}()
 }
