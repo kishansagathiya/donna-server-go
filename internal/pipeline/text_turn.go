@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -84,6 +85,11 @@ func (e *Engine) RunTextTurn(
 		systemPrompt = systemPrompt + "\n\nKnown about this user:\n" + profileSummary
 	}
 
+	toolsEnabled := e.Config != nil && e.Config.ChatToolsEnabled && e.Tools != nil && e.Tools.Len() > 0
+	if toolsEnabled {
+		systemPrompt = systemPrompt + "\n\n" + tools.BrowseToolsPrompt
+	}
+
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
 
 	llm, route := e.resolveLLMWithPreference(options.UserID, message, prefs.LLMModel)
@@ -92,40 +98,87 @@ func (e *Engine) RunTextTurn(
 	replyText := ""
 	firstToken := true
 
-	meta, err := llm.StreamCompletionWithOptions(ctx, messages, providers.ChatCompletionOptions{
+	baseOpts := providers.ChatCompletionOptions{
 		WebSearch:           options.WebSearch,
 		WebSearchMaxResults: 3,
-	}, func(chunk string) error {
-		if err := ctx.Err(); err != nil {
-			return err
+	}
+
+	var toolCitations []tools.Citation
+	if toolsEnabled {
+		loopResult, err := tools.RunToolLoop(ctx, llm, messages, e.Tools, baseOpts, tools.LoopLimits{}, tools.LoopCallbacks{
+			OnPhase: phase,
+			OnReply: func(text string) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if firstToken {
+					timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
+					firstToken = false
+				}
+				replyText = text
+				if callbacks.OnReply != nil {
+					callbacks.OnReply(replyText)
+				}
+				return nil
+			},
+		})
+		if err != nil {
+			return TurnResult{}, err
 		}
-		if firstToken {
-			timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
+		replyText = loopResult.ReplyText
+		toolCitations = loopResult.Citations
+		if firstToken && loopResult.FirstToken > 0 {
+			timings.LLMFirstTokenMs = int(loopResult.FirstToken.Milliseconds())
 			firstToken = false
 		}
-		replyText += chunk
-		if callbacks.OnReply != nil {
-			callbacks.OnReply(replyText)
+	} else {
+		meta, err := llm.StreamCompletionWithOptions(ctx, messages, baseOpts, func(chunk string) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if firstToken {
+				timings.LLMFirstTokenMs = int(time.Since(llmStart).Milliseconds())
+				firstToken = false
+			}
+			replyText += chunk
+			if callbacks.OnReply != nil {
+				callbacks.OnReply(replyText)
+			}
+			return nil
+		})
+		if err != nil {
+			return TurnResult{}, err
 		}
-		return nil
-	})
-	if err != nil {
-		return TurnResult{}, err
+		toolCitations = webToToolCitations(meta.WebCitations)
 	}
 
 	timings.TotalMs = int(time.Since(t0).Milliseconds())
 	phase(protocol.TurnPhaseDone)
 
+	citations := append(augmented.Citations, toolCitationsToMemory(toolCitations)...)
+
 	return TurnResult{
 		Transcript: message,
 		ReplyText:  replyText,
 		Timings:    timings,
-		Citations:  append(augmented.Citations, webCitations(meta.WebCitations)...),
+		Citations:  citations,
 		Route:      route,
 	}, nil
 }
 
-func webCitations(citations []providers.WebCitation) []MemoryCitation {
+func webToToolCitations(citations []providers.WebCitation) []tools.Citation {
+	out := make([]tools.Citation, 0, len(citations))
+	for _, citation := range citations {
+		out = append(out, tools.Citation{
+			URL:     citation.URL,
+			Title:   citation.Title,
+			Content: citation.Content,
+		})
+	}
+	return out
+}
+
+func toolCitationsToMemory(citations []tools.Citation) []MemoryCitation {
 	out := make([]MemoryCitation, 0, len(citations))
 	for _, citation := range citations {
 		text := strings.TrimSpace(citation.Title)
@@ -146,4 +199,9 @@ func webCitations(citations []providers.WebCitation) []MemoryCitation {
 		})
 	}
 	return out
+}
+
+// webCitations kept for tests that call it directly.
+func webCitations(citations []providers.WebCitation) []MemoryCitation {
+	return toolCitationsToMemory(webToToolCitations(citations))
 }

@@ -15,8 +15,33 @@ import (
 const openRouterBase = "https://openrouter.ai/api/v1"
 
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolDefinition struct {
+	Type     string             `json:"type"`
+	Function ToolFunctionSchema `json:"function"`
+}
+
+type ToolFunctionSchema struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type LLM struct {
@@ -29,10 +54,15 @@ type LLM struct {
 type ChatCompletionOptions struct {
 	WebSearch           bool
 	WebSearchMaxResults int
+	Tools               []ToolDefinition
+	ToolChoice          any // "auto" | "none" | map
 }
 
 type ChatCompletionMetadata struct {
 	WebCitations []WebCitation
+	ToolCalls    []ToolCall
+	FinishReason string
+	Content      string
 }
 
 type WebCitation struct {
@@ -102,6 +132,14 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 			"max_results": maxResults,
 		}}
 	}
+	if len(options.Tools) > 0 {
+		payload["tools"] = options.Tools
+		if options.ToolChoice != nil {
+			payload["tool_choice"] = options.ToolChoice
+		} else {
+			payload["tool_choice"] = "auto"
+		}
+	}
 	return json.Marshal(payload)
 }
 
@@ -136,6 +174,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	}
 
 	var meta ChatCompletionMetadata
+	toolAcc := map[int]*ToolCall{}
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -152,11 +191,13 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			Choices []struct {
 				Delta struct {
 					Content     string                  `json:"content"`
+					ToolCalls   []streamToolCallDelta   `json:"tool_calls"`
 					Annotations []urlCitationAnnotation `json:"annotations"`
 				} `json:"delta"`
 				Message struct {
 					Annotations []urlCitationAnnotation `json:"annotations"`
 				} `json:"message"`
+				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
@@ -168,25 +209,45 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 		choice := chunk.Choices[0]
 		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Delta.Annotations)
 		meta.WebCitations = appendURLCitations(meta.WebCitations, choice.Message.Annotations)
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			meta.FinishReason = *choice.FinishReason
+		}
+		accumulateToolCallDeltas(toolAcc, choice.Delta.ToolCalls)
 		text := choice.Delta.Content
-		if text != "" && onChunk != nil {
-			if err := onChunk(text); err != nil {
-				return ChatCompletionMetadata{}, err
+		if text != "" {
+			meta.Content += text
+			if onChunk != nil {
+				if err := onChunk(text); err != nil {
+					return ChatCompletionMetadata{}, err
+				}
 			}
 		}
 	}
-	return meta, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return ChatCompletionMetadata{}, err
+	}
+	meta.ToolCalls = toolCallsFromAccumulator(toolAcc)
+	if meta.FinishReason == "" {
+		if len(meta.ToolCalls) > 0 {
+			meta.FinishReason = "tool_calls"
+		} else {
+			meta.FinishReason = "stop"
+		}
+	}
+	return meta, nil
 }
 
-func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
-	body, err := l.chatRequestBody(messages, false, ChatCompletionOptions{})
+// CompleteOnceWithOptions runs a non-streaming completion. Used for tool rounds
+// where parsing tool_calls from a full message is simpler than streaming deltas.
+func (l *LLM) CompleteOnceWithOptions(ctx context.Context, messages []ChatMessage, options ChatCompletionOptions) (ChatCompletionMetadata, error) {
+	body, err := l.chatRequestBody(messages, false, options)
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterBase+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	for k, v := range l.headers() {
 		req.Header.Set(k, v)
@@ -194,29 +255,108 @@ func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string,
 
 	res, err := l.Client.Do(req)
 	if err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return "", fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM %d: %s", res.StatusCode, string(b))
 	}
 
 	var out struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content     string                  `json:"content"`
+				ToolCalls   []ToolCall              `json:"tool_calls"`
+				Annotations []urlCitationAnnotation `json:"annotations"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return "", err
+		return ChatCompletionMetadata{}, err
 	}
 	if len(out.Choices) == 0 {
-		return "", nil
+		return ChatCompletionMetadata{}, nil
 	}
-	return strings.TrimSpace(out.Choices[0].Message.Content), nil
+	choice := out.Choices[0]
+	meta := ChatCompletionMetadata{
+		Content:      strings.TrimSpace(choice.Message.Content),
+		ToolCalls:    choice.Message.ToolCalls,
+		FinishReason: choice.FinishReason,
+		WebCitations: appendURLCitations(nil, choice.Message.Annotations),
+	}
+	if meta.FinishReason == "" {
+		if len(meta.ToolCalls) > 0 {
+			meta.FinishReason = "tool_calls"
+		} else {
+			meta.FinishReason = "stop"
+		}
+	}
+	return meta, nil
+}
+
+func (l *LLM) CompleteOnce(ctx context.Context, messages []ChatMessage) (string, error) {
+	meta, err := l.CompleteOnceWithOptions(ctx, messages, ChatCompletionOptions{})
+	if err != nil {
+		return "", err
+	}
+	return meta.Content, nil
+}
+
+type streamToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func accumulateToolCallDeltas(acc map[int]*ToolCall, deltas []streamToolCallDelta) {
+	for _, delta := range deltas {
+		call, ok := acc[delta.Index]
+		if !ok {
+			call = &ToolCall{Type: "function"}
+			acc[delta.Index] = call
+		}
+		if delta.ID != "" {
+			call.ID = delta.ID
+		}
+		if delta.Type != "" {
+			call.Type = delta.Type
+		}
+		if delta.Function.Name != "" {
+			call.Function.Name = delta.Function.Name
+		}
+		if delta.Function.Arguments != "" {
+			call.Function.Arguments += delta.Function.Arguments
+		}
+	}
+}
+
+func toolCallsFromAccumulator(acc map[int]*ToolCall) []ToolCall {
+	if len(acc) == 0 {
+		return nil
+	}
+	maxIdx := -1
+	for idx := range acc {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	out := make([]ToolCall, 0, len(acc))
+	for i := 0; i <= maxIdx; i++ {
+		if call, ok := acc[i]; ok && call.Function.Name != "" {
+			if call.Type == "" {
+				call.Type = "function"
+			}
+			out = append(out, *call)
+		}
+	}
+	return out
 }
 
 type urlCitationAnnotation struct {

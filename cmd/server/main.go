@@ -26,6 +26,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/voice"
 )
@@ -71,6 +72,14 @@ func main() {
 	compiler := &knowledge.Compiler{KB: kbStore, LLM: llm, Notes: noteSync}
 	compileQueue := knowledge.NewQueue(kbStore, compiler)
 
+	chatTools := tools.DefaultRegistry(cfg.BrowserURL)
+	if cfg.ChatToolsEnabled {
+		log.Print("chat tools enabled", map[string]any{
+			"count":      chatTools.Len(),
+			"browserUrl": cfg.BrowserURL != "",
+		})
+	}
+
 	engine := &pipeline.Engine{
 		Config:      cfg,
 		STT:         stt,
@@ -79,6 +88,7 @@ func main() {
 		KB:          kbStore,
 		Notes:       notesStore,
 		Preferences: preferencesStore,
+		Tools:       chatTools,
 	}
 
 	r := chi.NewRouter()

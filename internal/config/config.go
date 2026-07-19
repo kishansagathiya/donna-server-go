@@ -34,6 +34,11 @@ type Config struct {
 	MemoryMinScore         float64
 	MaxHistoryMessages     int
 	Personas               []string
+	// BrowserURL is the donna-browser Playwright sidecar base URL (e.g. http://127.0.0.1:9229).
+	// When empty, browse_page is not registered; fetch_url still works.
+	BrowserURL string
+	// ChatToolsEnabled controls mid-turn tools (fetch_url / browse_page). Default true.
+	ChatToolsEnabled bool
 }
 
 func Load() (*Config, error) {
@@ -133,6 +138,12 @@ func Load() (*Config, error) {
 		personas = append([]string{"companion"}, personas...)
 	}
 
+	browserURL := strings.TrimSpace(os.Getenv("DONNA_BROWSER_URL"))
+	chatToolsEnabled := true
+	if raw := strings.TrimSpace(os.Getenv("DONNA_CHAT_TOOLS")); raw != "" {
+		chatToolsEnabled = parseBool(raw)
+	}
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -157,6 +168,8 @@ func Load() (*Config, error) {
 		MemoryMinScore:         memoryMinScore,
 		MaxHistoryMessages:     maxHistoryMessages,
 		Personas:               personas,
+		BrowserURL:             browserURL,
+		ChatToolsEnabled:       chatToolsEnabled,
 	}, nil
 }
 
