@@ -47,9 +47,15 @@ type Config struct {
 	ConnectorEncryptionKey string
 	// PublicAPIBase is the externally reachable API origin used for OAuth redirect_uri.
 	PublicAPIBase string
-	// WebAppBase is the web app origin for post-OAuth redirects.
+	// WebAppBase is the web app origin for post-OAuth redirects (https://donnadoesit.com).
 	WebAppBase string
 }
+
+const (
+	defaultWebAppBase = "https://donnadoesit.com"
+	// legacyRailwayWebAppBase was the temporary Railway hostname before the custom domain.
+	legacyRailwayWebAppBase = "https://donna-web-production-3d4a.up.railway.app"
+)
 
 func Load() (*Config, error) {
 	loadEnv()
@@ -161,7 +167,7 @@ func Load() (*Config, error) {
 	if publicAPIBase == "" {
 		publicAPIBase = strings.TrimSpace(os.Getenv("DONNA_API_BASE"))
 	}
-	webAppBase := strings.TrimSpace(os.Getenv("DONNA_WEB_APP_BASE"))
+	webAppBase := resolveWebAppBase(os.Getenv("DONNA_WEB_APP_BASE"))
 
 	return &Config{
 		Host:                   host,
@@ -204,6 +210,22 @@ func parseBool(raw string) bool {
 	default:
 		return false
 	}
+}
+
+// resolveWebAppBase returns the origin used after Granola (and future) OAuth.
+// Empty or legacy Railway web hosts fall back to the public DonnaDoesIt.com domain
+// so users are not bounced to *.up.railway.app after approving an integration.
+func resolveWebAppBase(raw string) string {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if base == "" {
+		return defaultWebAppBase
+	}
+	lower := strings.ToLower(base)
+	if lower == legacyRailwayWebAppBase ||
+		(strings.HasSuffix(lower, ".up.railway.app") && strings.Contains(lower, "donna-web")) {
+		return defaultWebAppBase
+	}
+	return base
 }
 
 func parseModelList(raw string) []string {
