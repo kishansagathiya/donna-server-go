@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,6 +17,8 @@ import (
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
@@ -80,6 +83,41 @@ func main() {
 		})
 	}
 
+	var connectorSvc *connectors.Service
+	var syncWorker *connectors.HourlySyncWorker
+	if cfg.IntegrationsEnabled {
+		encKey, err := connectors.ParseEncryptionKey(cfg.ConnectorEncryptionKey)
+		if err != nil {
+			log.Warn("integrations requested but encryption key invalid; connectors disabled", map[string]any{
+				"error": err.Error(),
+			})
+		} else {
+			store := &connectors.Store{DB: supa, Key: encKey}
+			registry := connectors.NewRegistry()
+			granolaAdapter := &granola.Adapter{
+				Store: store,
+				Notes: notesStore,
+				KB:    kbStore,
+			}
+			registry.Register(granolaAdapter)
+			connectorSvc = &connectors.Service{
+				Registry:            registry,
+				Store:               store,
+				Notes:               notesStore,
+				KB:                  kbStore,
+				IntegrationsEnabled: true,
+				GranolaEnabled:      cfg.GranolaEnabled,
+				PublicAPIBase:       cfg.PublicAPIBase,
+				WebAppBase:          cfg.WebAppBase,
+			}
+			syncWorker = &connectors.HourlySyncWorker{Service: connectorSvc}
+			syncWorker.Start()
+			log.Print("integrations enabled", map[string]any{
+				"granola": cfg.GranolaEnabled,
+			})
+		}
+	}
+
 	engine := &pipeline.Engine{
 		Config:      cfg,
 		STT:         stt,
@@ -89,6 +127,16 @@ func main() {
 		Notes:       notesStore,
 		Preferences: preferencesStore,
 		Tools:       chatTools,
+	}
+	if connectorSvc != nil {
+		engine.ConnectorPrompt = connectors.ConnectorToolsPrompt
+		engine.ConnectorTools = func(ctx context.Context, userID string, base *tools.Registry) *tools.Registry {
+			live := connectors.LoadLiveToolsForUser(ctx, connectorSvc, userID)
+			if len(live) == 0 {
+				return base
+			}
+			return connectors.MergeUserTools(base, live)
+		}
 	}
 
 	r := chi.NewRouter()
@@ -127,6 +175,11 @@ func main() {
 
 	actionsHandler := &actions.Handler{Store: actionsStore, Executor: actionExecutor}
 	actions.RegisterRoutes(r, authMiddleware, actionsHandler)
+
+	if connectorSvc != nil {
+		connectors.RegisterRoutes(r, authMiddleware, &connectors.Handler{Service: connectorSvc})
+		log.Print("integrations: GET /integrations, Granola OAuth/sync/disconnect routes", nil)
+	}
 
 	memoryHandler := &memory.Handler{KB: kbStore}
 	memory.RegisterRoutes(r, authMiddleware, memoryHandler)

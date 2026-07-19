@@ -198,6 +198,20 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noteID := chi.URLParam(r, "id")
+	existing, err := h.Store.GetNoteByID(r.Context(), userID, noteID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+	if existing.SourceType == "integration" {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error":   "read_only",
+			"message": "Imported integration notes are read-only. Delete them from Integrations.",
+		})
+		return
+	}
+
 	var body struct {
 		Content     *string `json:"content"`
 		NoteDate    *string `json:"note_date"`
@@ -224,7 +238,6 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		update.NoteDate = &formatted
 	}
 
-	noteID := chi.URLParam(r, "id")
 	note, err := h.Store.UpdateNote(r.Context(), userID, noteID, update)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "update_failed", "message": err.Error()})
@@ -246,8 +259,15 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notes_disabled"})
 		return
 	}
-
 	noteID := chi.URLParam(r, "id")
+	if existing, err := h.Store.GetNoteByID(r.Context(), userID, noteID); err == nil && existing.SourceType == "integration" {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error":   "read_only",
+			"message": "Imported integration notes are removed from Integrations → Delete imports.",
+		})
+		return
+	}
+
 	if err := h.Store.DeleteNote(r.Context(), userID, noteID); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "delete_failed", "message": err.Error()})
 		return

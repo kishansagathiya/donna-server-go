@@ -6,11 +6,13 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 )
 
-// Citation is a web source discovered while running a tool.
+// Citation is a source discovered while running a tool.
 type Citation struct {
 	URL     string
 	Title   string
 	Content string
+	// Source is the citation bucket for clients ("web", "granola", …). Empty means "web".
+	Source string
 }
 
 // Result is what a tool returns to the model (and optionally to citation UI).

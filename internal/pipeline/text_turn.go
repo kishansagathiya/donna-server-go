@@ -85,9 +85,18 @@ func (e *Engine) RunTextTurn(
 		systemPrompt = systemPrompt + "\n\nKnown about this user:\n" + profileSummary
 	}
 
-	toolsEnabled := e.Config != nil && e.Config.ChatToolsEnabled && e.Tools != nil && e.Tools.Len() > 0
+	turnTools := e.Tools
+	if e.ConnectorTools != nil && options.UserID != "" {
+		if merged := e.ConnectorTools(ctx, options.UserID, e.Tools); merged != nil {
+			turnTools = merged
+		}
+	}
+	toolsEnabled := e.Config != nil && e.Config.ChatToolsEnabled && turnTools != nil && turnTools.Len() > 0
 	if toolsEnabled {
 		systemPrompt = systemPrompt + "\n\n" + tools.BrowseToolsPrompt
+		if e.ConnectorPrompt != "" && registryHasPrefix(turnTools, "granola_") {
+			systemPrompt = systemPrompt + "\n\n" + e.ConnectorPrompt
+		}
 	}
 
 	messages := providers.BuildLLMMessages(systemPrompt, history, augmented.Text)
@@ -105,7 +114,7 @@ func (e *Engine) RunTextTurn(
 
 	var toolCitations []tools.Citation
 	if toolsEnabled {
-		loopResult, err := tools.RunToolLoop(ctx, llm, messages, e.Tools, baseOpts, tools.LoopLimits{}, tools.LoopCallbacks{
+		loopResult, err := tools.RunToolLoop(ctx, llm, messages, turnTools, baseOpts, tools.LoopLimits{}, tools.LoopCallbacks{
 			OnPhase: phase,
 			OnReply: func(text string) error {
 				if err := ctx.Err(); err != nil {
@@ -191,8 +200,12 @@ func toolCitationsToMemory(citations []tools.Citation) []MemoryCitation {
 		if text == "" {
 			continue
 		}
+		source := strings.TrimSpace(citation.Source)
+		if source == "" {
+			source = "web"
+		}
 		out = append(out, MemoryCitation{
-			Source: "web",
+			Source: source,
 			Text:   truncateCitationText(text),
 			URL:    strings.TrimSpace(citation.URL),
 			Title:  strings.TrimSpace(citation.Title),
@@ -204,4 +217,16 @@ func toolCitationsToMemory(citations []tools.Citation) []MemoryCitation {
 // webCitations kept for tests that call it directly.
 func webCitations(citations []providers.WebCitation) []MemoryCitation {
 	return toolCitationsToMemory(webToToolCitations(citations))
+}
+
+func registryHasPrefix(reg *tools.Registry, prefix string) bool {
+	if reg == nil || prefix == "" {
+		return false
+	}
+	for _, def := range reg.Definitions() {
+		if strings.HasPrefix(def.Function.Name, prefix) {
+			return true
+		}
+	}
+	return false
 }

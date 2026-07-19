@@ -55,6 +55,12 @@ func (c *Compiler) CompileSource(ctx context.Context, userID, sourceID string) e
 	if source.UserID != userID {
 		return errSourceNotOwned
 	}
+	// Integration imports (e.g. Granola transcripts) are retrieved directly via
+	// match_memory — never compiled into personal facts about the Donna user.
+	if source.SourceType == "integration" {
+		c.KB.LogKnowledge("asset compile skipped — integration source", map[string]any{"sourceId": sourceID})
+		return nil
+	}
 
 	existingProfile, _ := c.KB.GetUserProfileSummary(ctx, userID)
 	existingFacts, err := c.KB.GetActiveFacts(ctx, userID)

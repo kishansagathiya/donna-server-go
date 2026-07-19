@@ -112,6 +112,8 @@ Files:
   knowledge/          Ingested sources, extracted facts, and original files
   notes.json          Your notes
   compile_log.json    Knowledge compilation history
+  integrations.json   Sanitized connector metadata + imported meeting refs
+                      (never credentials or tokens)
 
 Schema: donna-data-export-v1
 `
@@ -171,10 +173,39 @@ func (e *Exporter) ExportUser(ctx context.Context, userID string, w io.Writer) e
 	if err := e.writeCompileLog(ctx, userID, zipWriter); err != nil {
 		return err
 	}
+	if err := e.writeIntegrations(ctx, userID, zipWriter); err != nil {
+		return err
+	}
 	if err := writeZipFile(zipWriter, "README.txt", []byte(exportReadme)); err != nil {
 		return err
 	}
 	return writeZipJSON(zipWriter, "manifest.json", manifest)
+}
+
+// writeIntegrations exports sanitized connector metadata and imported item
+// references — never credentials, tokens, or OAuth secrets.
+func (e *Exporter) writeIntegrations(ctx context.Context, userID string, zw *zip.Writer) error {
+	q := url.Values{}
+	q.Set("select", "id,provider,status,account_label,workspace_label,capabilities,sync_enabled,initial_sync_status,imported_meeting_count,imported_transcript_count,last_sync_at,connected_at,created_at,updated_at")
+	q.Set("user_id", "eq."+userID)
+	var connections []map[string]any
+	if err := e.DB.Get(ctx, "integration_connections", q, &connections); err != nil {
+		// Table may not exist yet on older DBs — skip quietly.
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "PGRST") {
+			return nil
+		}
+		return fmt.Errorf("load integrations: %w", err)
+	}
+	iq := url.Values{}
+	iq.Set("select", "id,provider,external_id,title,occurred_at,summary_note_id,created_at,updated_at")
+	iq.Set("user_id", "eq."+userID)
+	var items []map[string]any
+	_ = e.DB.Get(ctx, "integration_items", iq, &items)
+	return writeZipJSON(zw, "integrations.json", map[string]any{
+		"connections": connections,
+		"items":       items,
+		"note":        "Credentials and OAuth secrets are never included in exports.",
+	})
 }
 
 func (e *Exporter) checkRateLimit(userID string) error {

@@ -37,6 +37,22 @@ func (d *Deleter) DeleteUser(ctx context.Context, userID string) error {
 		}
 	}
 
+	// Integration rows first (credentials, mappings, imports). Notes/kb_sources
+	// cascade cleanup is also performed explicitly so embeddings/imports go away.
+	integrationTables := []string{
+		"integration_oauth_states",
+		"integration_item_sources",
+		"integration_items",
+		"integration_connections",
+	}
+	for _, table := range integrationTables {
+		q := url.Values{}
+		q.Set("user_id", "eq."+userID)
+		if err := d.DB.Delete(ctx, table, q); err != nil {
+			return fmt.Errorf("delete %s: %w", table, err)
+		}
+	}
+
 	tables := []string{"notes", "kb_facts", "kb_sources", "kb_compile_log", "conversation_turn_feedback", "conversations", "kb_user_profiles", "user_preferences"}
 	for _, table := range tables {
 		q := url.Values{}
