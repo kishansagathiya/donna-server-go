@@ -254,7 +254,7 @@ func (h *Handler) redirectAfterOAuth(w http.ResponseWriter, r *http.Request, ret
 	if base == "" {
 		base = "/"
 	}
-	dest := base + "/app/profile?integrations=granola"
+	dest := base + "/app?integrations=granola"
 	if ok {
 		dest += "&ok=1"
 	} else {
