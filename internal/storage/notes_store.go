@@ -350,7 +350,7 @@ func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []stri
 	q := url.Values{}
 	q.Set("select", n.summaryColumns())
 	q.Set("user_id", "eq."+userID)
-	q.Set("id", "in."+strings.Join(noteIDs, ","))
+	q.Set("id", "in.("+strings.Join(noteIDs, ",")+")")
 	q.Set("order", "note_date.desc")
 	if limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", limit))

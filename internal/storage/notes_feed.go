@@ -117,7 +117,7 @@ func (n *Notes) ListFeed(ctx context.Context, userID string, in NotesFeedQuery) 
 		}
 	}
 	if len(noteIDs) > 0 {
-		q.Set("id", "in."+strings.Join(noteIDs, ","))
+		q.Set("id", "in.("+strings.Join(noteIDs, ",")+")")
 	}
 	if cur.ID != "" {
 		// (note_date, id) < (cursor) in descending order

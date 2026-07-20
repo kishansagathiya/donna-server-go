@@ -124,7 +124,7 @@ func (n *Notes) TagsForNotes(ctx context.Context, userID string, noteIDs []strin
 	q := url.Values{}
 	q.Set("select", "note_id,tag")
 	q.Set("user_id", "eq."+userID)
-	q.Set("note_id", "in."+strings.Join(noteIDs, ","))
+	q.Set("note_id", "in.("+strings.Join(noteIDs, ",")+")")
 	q.Set("order", "tag.asc")
 
 	var rows []struct {
