@@ -21,6 +21,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/jobs"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	ingestpkg "github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
@@ -53,6 +54,21 @@ func main() {
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
+	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: supa.Enabled()}
+
+	var bgWorker *jobs.Worker
+	if cfg.BackgroundJobsEnabled {
+		bgWorker = &jobs.Worker{Store: jobStore, Handlers: map[string]jobs.Handler{}}
+		bgWorker.Start()
+		log.Print("background jobs worker enabled", nil)
+	}
+	log.Print("notes & memory v2 defaults", map[string]any{
+		"notesFeed":          cfg.NotesV2Feed,
+		"smartTagging":       cfg.NotesV2SmartTagging,
+		"memoryExtraction":   cfg.MemoryV2Extraction,
+		"memoryRetrieval":    cfg.MemoryV2Retrieval,
+		"backgroundJobs":     cfg.BackgroundJobsEnabled,
+	})
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
