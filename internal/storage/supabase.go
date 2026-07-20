@@ -120,6 +120,15 @@ func (s *Supabase) Delete(ctx context.Context, table string, query url.Values) e
 }
 
 func (s *Supabase) Patch(ctx context.Context, table string, query url.Values, body any) error {
+	return s.patch(ctx, table, query, body, "", nil)
+}
+
+// PatchReturning PATCHes rows and decodes Prefer: return=representation into dest.
+func (s *Supabase) PatchReturning(ctx context.Context, table string, query url.Values, body any, dest any) error {
+	return s.patch(ctx, table, query, body, "return=representation", dest)
+}
+
+func (s *Supabase) patch(ctx context.Context, table string, query url.Values, body any, prefer string, dest any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -129,7 +138,7 @@ func (s *Supabase) Patch(ctx context.Context, table string, query url.Values, bo
 	if err != nil {
 		return err
 	}
-	req.Header = s.headers("")
+	req.Header = s.headers(prefer)
 
 	res, err := s.Client.Do(req)
 	if err != nil {
@@ -140,6 +149,9 @@ func (s *Supabase) Patch(ctx context.Context, table string, query url.Values, bo
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		raw, _ := io.ReadAll(res.Body)
 		return fmt.Errorf("supabase PATCH %s %d: %s", table, res.StatusCode, string(raw))
+	}
+	if dest != nil {
+		return json.NewDecoder(res.Body).Decode(dest)
 	}
 	return nil
 }

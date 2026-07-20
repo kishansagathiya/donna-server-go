@@ -205,6 +205,62 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /notes/feed:
+    get:
+      tags: [Notes]
+      summary: Cursor-based notes feed
+      description: |
+        Unified Notes V2 feed for web and iOS. Supports cursor pagination, search,
+        tag filter, curated scope (hides `voice_turn` by default), canonical tag
+        facets, and enrichment state. Gated by the `notesFeed` feature flag.
+      operationId: listNotesFeed
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: curated
+          in: query
+          description: When true (default), excludes voice_turn notes from the feed
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Feed page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesFeed"
+        "400":
+          description: Invalid cursor or curated flag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Notes feed feature flag disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /notes/recent:
     get:
       tags: [Notes]
@@ -238,17 +294,12 @@ paths:
     post:
       tags: [Notes]
       summary: Create manual note
-      description: Web client only. Requires `X-Donna-Client: web` header.
+      description: |
+        Create a curated note. Available to authenticated web and iOS clients.
+        Pass a client-generated `id` for optimistic/idempotent creates.
       operationId: createNote
       security:
         - bearerAuth: []
-      parameters:
-        - name: X-Donna-Client
-          in: header
-          required: true
-          schema:
-            type: string
-            enum: [web]
       requestBody:
         required: true
         content:
@@ -257,27 +308,27 @@ paths:
               $ref: "#/components/schemas/CreateNoteRequest"
       responses:
         "200":
-          description: Note created
+          description: Note created (or existing note for idempotent retry)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Note"
+        "409":
+          description: Idempotency conflict (same id, different content)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /notes/{id}:
     get:
       tags: [Notes]
       summary: Get note
-      description: Web client only. Returns full note content for editing.
+      description: Returns full note content for editing. Available to web and iOS clients.
       operationId: getNote
       security:
         - bearerAuth: []
       parameters:
-        - name: X-Donna-Client
-          in: header
-          required: true
-          schema:
-            type: string
-            enum: [web]
         - name: id
           in: path
           required: true
@@ -302,6 +353,7 @@ paths:
       summary: Update note
       description: |
         Edit content, date, and urgency/importance flags.
+        When `content_version` is sent, a mismatch returns 409.
         Available to web and iOS clients.
       operationId: updateNote
       security:
@@ -326,20 +378,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Note"
+        "409":
+          description: Content version conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
       tags: [Notes]
       summary: Delete note
-      description: Web client only.
+      description: Available to authenticated web and iOS clients.
       operationId: deleteNote
       security:
         - bearerAuth: []
       parameters:
-        - name: X-Donna-Client
-          in: header
-          required: true
-          schema:
-            type: string
-            enum: [web]
         - name: id
           in: path
           required: true
@@ -628,7 +680,65 @@ components:
           type: boolean
         source_type:
           type: string
-          enum: [voice_turn, document, manual]
+          enum: [voice_turn, document, manual, integration]
+        keywords:
+          type: array
+          items:
+            type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        has_audio:
+          type: boolean
+        content_version:
+          type: integer
+          format: int64
+        enrichment_status:
+          type: string
+          enum: [idle, queued, running, succeeded, failed]
+        enrichment_version:
+          type: integer
+          format: int64
+        tags:
+          type: array
+          items:
+            type: string
+
+    NotesFeed:
+      type: object
+      required: [items, facets]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NoteSummary"
+        next_cursor:
+          type: string
+        facets:
+          type: object
+          required: [tags]
+          properties:
+            tags:
+              type: array
+              items:
+                $ref: "#/components/schemas/TagFacet"
+
+    TagFacet:
+      type: object
+      required: [tag, canonical, count, pinned]
+      properties:
+        tag:
+          type: string
+        canonical:
+          type: string
+        count:
+          type: integer
+        pinned:
+          type: boolean
+        alias_of:
+          type: string
+          nullable: true
 
     Note:
       allOf:
@@ -655,11 +765,17 @@ components:
             updated_at:
               type: string
               format: date-time
+            audio_url:
+              type: string
 
     CreateNoteRequest:
       type: object
       required: [content]
       properties:
+        id:
+          type: string
+          format: uuid
+          description: Optional client-generated UUID for optimistic/idempotent create
         content:
           type: string
         note_date:
@@ -678,6 +794,10 @@ components:
           type: boolean
         is_urgent:
           type: boolean
+        content_version:
+          type: integer
+          format: int64
+          description: Expected version; mismatch returns 409
 
     TurnPhase:
       type: string

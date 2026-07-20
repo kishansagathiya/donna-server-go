@@ -2,15 +2,18 @@ package notes
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 type Sync struct {
 	Store   *storage.Notes
 	Queue   *IndexQueue
+	Jobs    *storage.BackgroundJobs
 	Intents IntentQueue
 }
 
@@ -28,9 +31,7 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	if err != nil {
 		return err
 	}
-	if s.Queue != nil {
-		s.Queue.Enqueue(noteID)
-	}
+	s.enqueueEnrichment(ctx, userID, noteID, 1)
 
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
 		if _, err := s.Store.SetTagsForNote(ctx, userID, noteID, tags); err != nil {
@@ -40,31 +41,13 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	return nil
 }
 
+// FromVoiceSources previously created one curated note per talk voice turn.
+// Notes V2 keeps voice turns in conversation/kb_sources only — curated Notes
+// come from explicit capture (manual, notes-mode dictation, excerpts).
 func (s *Sync) FromVoiceSources(ctx context.Context, userID string, sources []storage.KbSource) error {
-	if s.Store == nil || !s.Store.Enabled {
-		return nil
-	}
-
-	for _, source := range sources {
-		if source.SourceType != "voice_turn" {
-			continue
-		}
-		content := ExtractVoiceUserContent(source.Content)
-		if strings.TrimSpace(content) == "" {
-			continue
-		}
-
-		noteDate := time.Now().UTC()
-		if source.CreatedAt != "" {
-			if parsed, err := time.Parse(time.RFC3339, source.CreatedAt); err == nil {
-				noteDate = parsed.UTC()
-			}
-		}
-
-		if err := s.FromSource(ctx, userID, source.ID, "voice_turn", content, noteDate); err != nil {
-			return err
-		}
-	}
+	_ = ctx
+	_ = userID
+	_ = sources
 	return nil
 }
 
@@ -72,17 +55,21 @@ func (s *Sync) FromVoiceSources(ctx context.Context, userID string, sources []st
 // Notes tab, the chat `notes` mode shortcut, or dictated over the /voice
 // WebSocket. audio is non-nil only for the voice-dictation flow; for typed
 // channels it stays nil so the row remains a plain text note.
+// clientID, when non-empty, is used for optimistic/idempotent creates.
 func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDate *time.Time, audio *storage.NoteAudioInput) (storage.Note, error) {
+	return s.CreateManualWithID(ctx, userID, "", content, noteDate, audio)
+}
+
+func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content string, noteDate *time.Time, audio *storage.NoteAudioInput) (storage.Note, error) {
 	note, err := s.Store.CreateNote(ctx, userID, "manual", content, storage.CreateNoteOptions{
+		ID:       strings.TrimSpace(clientID),
 		NoteDate: noteDate,
 		Audio:    audio,
 	})
 	if err != nil {
 		return storage.Note{}, err
 	}
-	if s.Queue != nil {
-		s.Queue.Enqueue(note.ID)
-	}
+	s.enqueueEnrichment(ctx, userID, note.ID, note.ContentVersion)
 	if s.Intents != nil {
 		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
@@ -92,4 +79,59 @@ func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDat
 		}
 	}
 	return note, nil
+}
+
+// enqueueEnrichment persists first, then schedules durable background jobs.
+// No synchronous LLM or embedding work runs here.
+func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID string, contentVersion int64) {
+	if noteID == "" {
+		return
+	}
+	if s.Jobs == nil || !s.Jobs.Enabled {
+		return
+	}
+	if contentVersion <= 0 {
+		contentVersion = 1
+	}
+
+	enrichKey := fmt.Sprintf("note_enrich:%s:%d", noteID, contentVersion)
+	embedKey := fmt.Sprintf("note_embed:%s:%d", noteID, contentVersion)
+	payload := map[string]any{"note_id": noteID}
+
+	if _, err := s.Jobs.Enqueue(ctx, storage.EnqueueJobInput{
+		UserID:        userID,
+		JobType:       storage.JobTypeNoteEnrich,
+		DedupeKey:     enrichKey,
+		Payload:       payload,
+		TargetKind:    storage.TargetKindNote,
+		TargetID:      noteID,
+		TargetVersion: contentVersion,
+	}); err != nil {
+		log.Warn("note enrich job enqueue failed", map[string]any{
+			"noteId": log.ShortID(noteID),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if _, err := s.Jobs.Enqueue(ctx, storage.EnqueueJobInput{
+		UserID:        userID,
+		JobType:       storage.JobTypeNoteEmbed,
+		DedupeKey:     embedKey,
+		Payload:       payload,
+		TargetKind:    storage.TargetKindNote,
+		TargetID:      noteID,
+		TargetVersion: contentVersion,
+	}); err != nil {
+		log.Warn("note embed job enqueue failed", map[string]any{
+			"noteId": log.ShortID(noteID),
+			"error":  err.Error(),
+		})
+		return
+	}
+	if err := s.Store.MarkEnrichmentQueued(ctx, userID, noteID); err != nil {
+		log.Warn("mark enrichment queued failed", map[string]any{
+			"noteId": log.ShortID(noteID),
+			"error":  err.Error(),
+		})
+	}
 }

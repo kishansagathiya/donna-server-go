@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 )
+
+// ErrVersionConflict is returned when an update's expected content_version does not match.
+var ErrVersionConflict = errors.New("content_version_conflict")
+
+// ErrIdempotencyConflict is returned when an optimistic create reuses an id with different content.
+var ErrIdempotencyConflict = errors.New("idempotency_conflict")
 
 // NoteAudioBucket is the Supabase storage bucket where dictated note audio
 // (16 kHz mono 16-bit WAV, RIFF-wrapped by the voice session) is uploaded.
@@ -51,16 +58,20 @@ func (n Note) HasAudio() bool {
 }
 
 type NoteSummary struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Preview     string   `json:"preview"`
-	NoteDate    string   `json:"note_date"`
-	IsImportant bool     `json:"is_important"`
-	IsUrgent    bool     `json:"is_urgent"`
-	SourceType  string   `json:"source_type"`
-	Keywords    []string `json:"keywords"`
-	Category    *string  `json:"category"`
-	HasAudio    bool     `json:"has_audio"`
+	ID                string   `json:"id"`
+	Title             string   `json:"title"`
+	Preview           string   `json:"preview"`
+	NoteDate          string   `json:"note_date"`
+	IsImportant       bool     `json:"is_important"`
+	IsUrgent          bool     `json:"is_urgent"`
+	SourceType        string   `json:"source_type"`
+	Keywords          []string `json:"keywords"`
+	Category          *string  `json:"category"`
+	HasAudio          bool     `json:"has_audio"`
+	ContentVersion    int64    `json:"content_version"`
+	EnrichmentStatus  string   `json:"enrichment_status"`
+	EnrichmentVersion int64    `json:"enrichment_version"`
+	Tags              []string `json:"tags,omitempty"`
 }
 
 type NoteFlags struct {
@@ -91,10 +102,11 @@ func (r noteSummaryRow) toSummary() NoteSummary {
 }
 
 type NoteUpdate struct {
-	Content     *string
-	NoteDate    *string
-	IsImportant *bool
-	IsUrgent    *bool
+	Content          *string
+	NoteDate         *string
+	IsImportant      *bool
+	IsUrgent         *bool
+	ExpectedVersion  *int64 // when set, update fails with ErrVersionConflict on mismatch
 }
 
 type Notes struct {
@@ -104,23 +116,26 @@ type Notes struct {
 }
 
 func (n *Notes) selectColumns() string {
-	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at,audio_path,audio_mime"
+	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at,content_version,enrichment_status,enrichment_version,audio_path,audio_mime"
 }
 
 func (n *Notes) summaryColumns() string {
-	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category,audio_path"
+	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category,content_version,enrichment_status,enrichment_version,audio_path"
 }
 
 // CreateNoteOptions configures a freshly-created note. Audio, when non-nil,
 // is uploaded to the note-audio bucket before the row is inserted so the stored
 // audio_path is consistent from the start. SourceID/NoteDate behave as before.
+// ID, when set, is a client-generated UUID for optimistic/idempotent creates.
 type CreateNoteOptions struct {
+	ID       string
 	SourceID *string
 	NoteDate *time.Time
 	Audio    *NoteAudioInput
 }
 
 func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content string, opts CreateNoteOptions) (Note, error) {
+	content = strings.TrimSpace(content)
 	title := noteTitle(content)
 	preview := notePreview(content)
 	noteDate := time.Now().UTC()
@@ -128,14 +143,30 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 		noteDate = opts.NoteDate.UTC()
 	}
 
+	clientID := strings.TrimSpace(opts.ID)
+	if clientID != "" {
+		if existing, err := n.GetNoteByID(ctx, userID, clientID); err == nil {
+			if strings.TrimSpace(existing.Content) == content {
+				return existing, nil
+			}
+			return Note{}, ErrIdempotencyConflict
+		}
+	}
+
 	body := map[string]any{
-		"user_id":     userID,
-		"source_type": sourceType,
-		"note_date":   noteDate.Format(time.RFC3339),
-		"title":       title,
-		"content":     content,
-		"preview":     preview,
-		"updated_at":  time.Now().UTC().Format(time.RFC3339),
+		"user_id":            userID,
+		"source_type":        sourceType,
+		"note_date":          noteDate.Format(time.RFC3339),
+		"title":              title,
+		"content":            content,
+		"preview":            preview,
+		"updated_at":         time.Now().UTC().Format(time.RFC3339),
+		"content_version":    1,
+		"enrichment_status":  "idle",
+		"enrichment_version": 0,
+	}
+	if clientID != "" {
+		body["id"] = clientID
 	}
 	if opts.SourceID != nil {
 		body["source_id"] = *opts.SourceID
@@ -165,12 +196,19 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 		}
 	}
 
-	if emb := n.noteEmbedding(ctx, title, content, preview); emb != nil {
-		body["embedding"] = emb
-	}
+	// Embeddings run via background jobs after the row is durable — never on the write path.
 
 	var rows []Note
 	if err := n.DB.Insert(ctx, "notes", body, &rows); err != nil {
+		if clientID != "" && isUniqueViolation(err) {
+			existing, getErr := n.GetNoteByID(ctx, userID, clientID)
+			if getErr == nil {
+				if strings.TrimSpace(existing.Content) == content {
+					return existing, nil
+				}
+				return Note{}, ErrIdempotencyConflict
+			}
+		}
 		return Note{}, err
 	}
 	if len(rows) == 0 {
@@ -195,9 +233,7 @@ func (n *Notes) UpsertNoteFromSource(ctx context.Context, userID, sourceID, sour
 		"updated_at":  now,
 	}
 
-	if emb := n.noteEmbedding(ctx, title, content, preview); emb != nil {
-		body["embedding"] = emb
-	}
+	// Embeddings run via background jobs after the row is durable — never on the write path.
 
 	var rows []struct {
 		ID string `json:"id"`
@@ -211,24 +247,25 @@ func (n *Notes) UpsertNoteFromSource(ctx context.Context, userID, sourceID, sour
 	return rows[0].ID, nil
 }
 
-// noteEmbedding returns an embedding for title + content (preview included for
-// short notes), or nil if the embedder is unavailable or embedding fails.
-func (n *Notes) noteEmbedding(ctx context.Context, title, content, preview string) []float32 {
-	if n.Embedder == nil || !n.Embedder.Enabled() {
-		return nil
+// MarkEnrichmentQueued sets enrichment_status=queued after a durable job enqueue.
+func (n *Notes) MarkEnrichmentQueued(ctx context.Context, userID, noteID string) error {
+	q := url.Values{}
+	q.Set("id", "eq."+noteID)
+	q.Set("user_id", "eq."+userID)
+	return n.DB.Patch(ctx, "notes", q, map[string]any{
+		"enrichment_status": "queued",
+		"updated_at":        time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
 	}
-	text := strings.TrimSpace(title + "\n" + content)
-	if text == "" {
-		text = strings.TrimSpace(preview)
-	}
-	if text == "" {
-		return nil
-	}
-	vec, err := n.Embedder.EmbedOne(ctx, text)
-	if err != nil {
-		return nil
-	}
-	return vec
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "23505")
 }
 
 func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, error) {
@@ -437,11 +474,13 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 		"updated_at":         time.Now().UTC().Format(time.RFC3339),
 		"user_last_modified": time.Now().UTC().Format(time.RFC3339),
 	}
+	contentChanged := false
 	if update.Content != nil {
 		content := strings.TrimSpace(*update.Content)
 		body["content"] = content
 		body["title"] = noteTitle(content)
 		body["preview"] = notePreview(content)
+		contentChanged = true
 	}
 	if update.NoteDate != nil {
 		body["note_date"] = *update.NoteDate
@@ -456,6 +495,36 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 	q := url.Values{}
 	q.Set("id", "eq."+noteID)
 	q.Set("user_id", "eq."+userID)
+
+	if update.ExpectedVersion != nil {
+		expected := *update.ExpectedVersion
+		q.Set("content_version", fmt.Sprintf("eq.%d", expected))
+		body["content_version"] = expected + 1
+		if contentChanged {
+			body["enrichment_status"] = "idle"
+		}
+		var rows []Note
+		if err := n.DB.PatchReturning(ctx, "notes", q, body, &rows); err != nil {
+			return Note{}, err
+		}
+		if len(rows) == 0 {
+			if _, err := n.GetNoteByID(ctx, userID, noteID); err != nil {
+				return Note{}, err
+			}
+			return Note{}, ErrVersionConflict
+		}
+		return rows[0], nil
+	}
+
+	if contentChanged {
+		// Bump version whenever content changes even without an explicit expected version.
+		existing, err := n.GetNoteByID(ctx, userID, noteID)
+		if err != nil {
+			return Note{}, err
+		}
+		body["content_version"] = existing.ContentVersion + 1
+		body["enrichment_status"] = "idle"
+	}
 
 	if err := n.DB.Patch(ctx, "notes", q, body); err != nil {
 		return Note{}, err

@@ -2,6 +2,7 @@ package notes
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -23,6 +25,58 @@ type Handler struct {
 	KB *storage.Knowledge
 	// Intents extracts actionable intents after user note updates.
 	Intents IntentQueue
+	// Flags resolves per-user Notes & Memory V2 feature flags.
+	Flags *featureflags.Resolver
+}
+
+func (h *Handler) Feed(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "notes_disabled"})
+		return
+	}
+	if h.Flags != nil {
+		flags, err := h.Flags.NotesMemoryV2ForUser(r.Context(), userID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "flags_failed", "message": err.Error()})
+			return
+		}
+		if !flags.NotesFeed {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "notes_feed_disabled"})
+			return
+		}
+	}
+
+	curated := true
+	if raw := strings.TrimSpace(r.URL.Query().Get("curated")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_curated"})
+			return
+		}
+		curated = parsed
+	}
+
+	feed, err := h.Store.ListFeed(r.Context(), userID, storage.NotesFeedQuery{
+		Limit:   queryLimit(r, 50),
+		Cursor:  strings.TrimSpace(r.URL.Query().Get("cursor")),
+		Query:   strings.TrimSpace(r.URL.Query().Get("q")),
+		Tag:     strings.TrimSpace(r.URL.Query().Get("tag")),
+		Curated: curated,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid_cursor") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "feed_failed", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, feed)
 }
 
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +211,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
+		ID       string `json:"id"`
 		Content  string `json:"content"`
 		NoteDate string `json:"note_date"`
 	}
@@ -179,8 +234,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		noteDate = &parsed
 	}
 
-	note, err := h.Sync.CreateManual(r.Context(), userID, strings.TrimSpace(body.Content), noteDate, nil)
+	note, err := h.Sync.CreateManualWithID(r.Context(), userID, strings.TrimSpace(body.ID), strings.TrimSpace(body.Content), noteDate, nil)
 	if err != nil {
+		if errors.Is(err, storage.ErrIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "idempotency_conflict",
+				"message": "A note with this id already exists with different content",
+			})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create_failed", "message": err.Error()})
 		return
 	}
@@ -213,10 +275,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Content     *string `json:"content"`
-		NoteDate    *string `json:"note_date"`
-		IsImportant *bool   `json:"is_important"`
-		IsUrgent    *bool   `json:"is_urgent"`
+		Content         *string `json:"content"`
+		NoteDate        *string `json:"note_date"`
+		IsImportant     *bool   `json:"is_important"`
+		IsUrgent        *bool   `json:"is_urgent"`
+		ContentVersion  *int64  `json:"content_version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid_body"})
@@ -224,9 +287,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	update := storage.NoteUpdate{
-		Content:     body.Content,
-		IsImportant: body.IsImportant,
-		IsUrgent:    body.IsUrgent,
+		Content:         body.Content,
+		IsImportant:     body.IsImportant,
+		IsUrgent:        body.IsUrgent,
+		ExpectedVersion: body.ContentVersion,
 	}
 	if body.NoteDate != nil && strings.TrimSpace(*body.NoteDate) != "" {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*body.NoteDate))
@@ -240,11 +304,24 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	note, err := h.Store.UpdateNote(r.Context(), userID, noteID, update)
 	if err != nil {
+		if errors.Is(err, storage.ErrVersionConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":           "content_version_conflict",
+				"message":         "Note was modified; reload and retry",
+				"content_version": existing.ContentVersion,
+			})
+			return
+		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "update_failed", "message": err.Error()})
 		return
 	}
-	if update.Content != nil && h.Intents != nil {
-		h.Intents.EnqueueNote(userID, note.ID, note.Content)
+	if update.Content != nil {
+		if h.Sync != nil {
+			h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.ContentVersion)
+		}
+		if h.Intents != nil {
+			h.Intents.EnqueueNote(userID, note.ID, note.Content)
+		}
 	}
 	writeJSON(w, http.StatusOK, note)
 }
@@ -306,6 +383,7 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 	r.Route("/notes", func(r chi.Router) {
 		r.Use(authMiddleware)
 
+		r.Get("/feed", h.Feed)
 		r.Get("/search", h.Search)
 		r.Post("/daily-check", h.DailyCheck)
 		r.Get("/recent", h.Recent)
@@ -314,14 +392,16 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		r.Get("/tags/{tag}", h.NotesForTag)
 		r.Post("/recompute-tags", h.RecomputeTagCounts)
 
+		// Shared CRUD for authenticated web and iOS clients.
+		r.Post("/", h.Create)
+		r.Get("/{id}", h.Get)
+		r.Delete("/{id}", h.Delete)
+		r.Get("/{id}/tags", h.GetNoteTags)
+		r.Put("/{id}/tags", h.SetNoteTags)
+
 		r.Group(func(r chi.Router) {
 			r.Use(RequireWebClient)
 			r.Get("/quadrants", h.Quadrants)
-			r.Post("/", h.Create)
-			r.Get("/{id}", h.Get)
-			r.Delete("/{id}", h.Delete)
-			r.Get("/{id}/tags", h.GetNoteTags)
-			r.Put("/{id}/tags", h.SetNoteTags)
 		})
 	})
 }

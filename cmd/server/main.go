@@ -20,6 +20,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/jobs"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
@@ -54,7 +55,7 @@ func main() {
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
-	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: supa.Enabled()}
+	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
 
 	var bgWorker *jobs.Worker
 	if cfg.BackgroundJobsEnabled {
@@ -63,11 +64,11 @@ func main() {
 		log.Print("background jobs worker enabled", nil)
 	}
 	log.Print("notes & memory v2 defaults", map[string]any{
-		"notesFeed":          cfg.NotesV2Feed,
-		"smartTagging":       cfg.NotesV2SmartTagging,
-		"memoryExtraction":   cfg.MemoryV2Extraction,
-		"memoryRetrieval":    cfg.MemoryV2Retrieval,
-		"backgroundJobs":     cfg.BackgroundJobsEnabled,
+		"notesFeed":        cfg.NotesV2Feed,
+		"smartTagging":     cfg.NotesV2SmartTagging,
+		"memoryExtraction": cfg.MemoryV2Extraction,
+		"memoryRetrieval":  cfg.MemoryV2Retrieval,
+		"backgroundJobs":   cfg.BackgroundJobsEnabled,
 	})
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
@@ -83,7 +84,7 @@ func main() {
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
 
-	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Intents: intentQueue}
+	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Jobs: jobStore, Intents: intentQueue}
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
 		intentQueue.EnqueueConversationTurn(input.UserID, input.ConversationID, input.TurnIndex, input.UserTranscript)
 	}
@@ -182,7 +183,18 @@ func main() {
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
 	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
-	notesHandler := &notes.Handler{Store: notesStore, Sync: noteSync, Daily: dailyChecker, KB: kbStore, Intents: intentQueue}
+	flagResolver := &featureflags.Resolver{
+		Defaults: cfg,
+		Store:    &storage.FeatureFlags{DB: supa, Enabled: supa.Enabled()},
+	}
+	notesHandler := &notes.Handler{
+		Store:   notesStore,
+		Sync:    noteSync,
+		Daily:   dailyChecker,
+		KB:      kbStore,
+		Intents: intentQueue,
+		Flags:   flagResolver,
+	}
 	authMiddleware := appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
