@@ -32,6 +32,9 @@ type Note struct {
 	UserLastModified *string  `json:"user_last_modified"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
+	ContentVersion   int64    `json:"content_version"`
+	EnrichmentStatus string   `json:"enrichment_status"`
+	EnrichmentVersion int64   `json:"enrichment_version"`
 	AudioPath        *string  `json:"audio_path,omitempty"`
 	AudioMime        *string  `json:"audio_mime,omitempty"`
 	// AudioURL is populated only on read by the notes handler (signed Supabase

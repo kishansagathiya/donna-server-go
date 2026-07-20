@@ -49,6 +49,14 @@ type Config struct {
 	PublicAPIBase string
 	// WebAppBase is the web app origin for post-OAuth redirects (https://donnadoesit.com).
 	WebAppBase string
+
+	// Notes & Memory V2 rollout flags (defaults; per-user overrides in user_preferences).
+	NotesV2Feed         bool
+	NotesV2SmartTagging bool
+	MemoryV2Extraction  bool
+	MemoryV2Retrieval   bool
+	// BackgroundJobsEnabled runs the durable background_jobs poller.
+	BackgroundJobsEnabled bool
 }
 
 const (
@@ -169,6 +177,12 @@ func Load() (*Config, error) {
 	}
 	webAppBase := resolveWebAppBase(os.Getenv("DONNA_WEB_APP_BASE"))
 
+	notesV2Feed := parseBool(os.Getenv("DONNA_NOTES_V2_FEED"))
+	notesV2SmartTagging := parseBool(os.Getenv("DONNA_NOTES_V2_SMART_TAGGING"))
+	memoryV2Extraction := parseBool(os.Getenv("DONNA_MEMORY_V2_EXTRACTION"))
+	memoryV2Retrieval := parseBool(os.Getenv("DONNA_MEMORY_V2_RETRIEVAL"))
+	backgroundJobsEnabled := parseBool(os.Getenv("DONNA_BACKGROUND_JOBS"))
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -200,6 +214,11 @@ func Load() (*Config, error) {
 		ConnectorEncryptionKey: connectorKey,
 		PublicAPIBase:          publicAPIBase,
 		WebAppBase:             webAppBase,
+		NotesV2Feed:            notesV2Feed,
+		NotesV2SmartTagging:    notesV2SmartTagging,
+		MemoryV2Extraction:     memoryV2Extraction,
+		MemoryV2Retrieval:      memoryV2Retrieval,
+		BackgroundJobsEnabled:  backgroundJobsEnabled,
 	}, nil
 }
 
