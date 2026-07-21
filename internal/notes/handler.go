@@ -390,6 +390,8 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		r.Patch("/{id}", h.Update)
 		r.Get("/tags", h.ListTags)
 		r.Get("/taxonomy", h.ListTaxonomy)
+		r.Get("/tag-suggestions", h.ListTagSuggestions)
+		r.Post("/tag-suggestions/{id}", h.ResolveTagSuggestion)
 		r.Post("/tags/pin", h.PinTag)
 		r.Post("/tags/alias", h.AliasTag)
 		r.Post("/tags/rename", h.RenameTag)
