@@ -72,12 +72,15 @@ func main() {
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
+	memoryEnqueuer := &memory.Enqueuer{Jobs: jobStore, Flags: flagResolver}
+	memoryExtractor := &memory.Extractor{KB: kbStore, Notes: notesStore, LLM: llm, Flags: flagResolver}
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
 		bgWorker = &jobs.Worker{
 			Store: jobStore,
 			Handlers: map[string]jobs.Handler{
 				storage.JobTypeSmartTagEnrich: enricher.HandleJob,
+				storage.JobTypeMemoryExtract:  memoryExtractor.HandleJob,
 			},
 		}
 		bgWorker.Start()
@@ -95,9 +98,23 @@ func main() {
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
 
-	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Jobs: jobStore, Intents: intentQueue, Flags: flagResolver}
+	noteSync := &notes.Sync{
+		Store:   notesStore,
+		Queue:   noteIndexQueue,
+		Jobs:    jobStore,
+		Intents: intentQueue,
+		Flags:   flagResolver,
+		Memory:  memoryEnqueuer,
+	}
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
 		intentQueue.EnqueueConversationTurn(input.UserID, input.ConversationID, input.TurnIndex, input.UserTranscript)
+		memoryEnqueuer.EnqueueFromConversationTurn(
+			context.Background(),
+			input.UserID,
+			input.ConversationID,
+			input.TurnIndex,
+			input.UserTranscript,
+		)
 	}
 
 	compiler := &knowledge.Compiler{KB: kbStore, LLM: llm, Notes: noteSync}
@@ -154,6 +171,7 @@ func main() {
 		KB:          kbStore,
 		Notes:       notesStore,
 		Preferences: preferencesStore,
+		Flags:       flagResolver,
 		Tools:       chatTools,
 	}
 	if connectorSvc != nil {
@@ -187,7 +205,7 @@ func main() {
 		writeJSON(w, http.StatusOK, knowledge.SupportedFormats())
 	})
 
-	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue, Notes: noteSync}
+	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue, Notes: noteSync, Memory: memoryEnqueuer}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,

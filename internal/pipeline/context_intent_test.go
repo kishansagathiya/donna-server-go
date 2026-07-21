@@ -19,6 +19,7 @@ func TestNeedsUserContext(t *testing.T) {
 		{"what do you know?", true},
 		{"tell me about my coffee preferences", true},
 		{"how should I find a co-founder?", true},
+		{"When is Sarah's birthday?", true},
 		{"", false},
 	}
 
@@ -27,5 +28,12 @@ func TestNeedsUserContext(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("NeedsUserContext(%q) = %v, want %v", tt.transcript, got, tt.want)
 		}
+	}
+}
+
+func TestMemoryPlanFor_genericNoEmbed(t *testing.T) {
+	p := MemoryPlanFor("what is a CRDT?")
+	if p.ShouldRetrieve || p.NeedsEmbed {
+		t.Fatalf("generic prompt must not retrieve/embed: %+v", p)
 	}
 }

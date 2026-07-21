@@ -14,6 +14,7 @@ type MemorySuggestion struct {
 	SuggestionKind string         `json:"suggestion_kind"`
 	Status         string         `json:"status"`
 	TargetNoteID   *string        `json:"target_note_id,omitempty"`
+	TargetFactID   *string        `json:"target_fact_id,omitempty"`
 	Payload        map[string]any `json:"payload"`
 	Confidence     *float64       `json:"confidence,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`

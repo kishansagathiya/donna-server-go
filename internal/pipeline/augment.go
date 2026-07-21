@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -83,8 +84,16 @@ const citationTextMax = 160
 // defaultMemoryMinScore is used when no threshold is configured (tests, zero value).
 const defaultMemoryMinScore = 0.35
 
+// v2TokenBudgetChars approximates a 1,200-token budget for Memory V2 retrieval.
+const v2TokenBudgetChars = 1200 * 4
+
 func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string, minScore float64) TranscriptAugmentation {
-	_ = sessionID
+	return DefaultAugmentOpts(ctx, kb, notes, transcript, userID, sessionID, minScore, false)
+}
+
+// DefaultAugmentOpts runs legacy hybrid retrieval, or Memory V2 intent-aware
+// hybrid retrieval when useMemoryV2 is true.
+func DefaultAugmentOpts(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string, minScore float64, useMemoryV2 bool) TranscriptAugmentation {
 	base := TranscriptAugmentation{Transcript: transcript}
 
 	if looksLikeChitchat(transcript) {
@@ -94,6 +103,10 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 
 	if minScore <= 0 {
 		minScore = defaultMemoryMinScore
+	}
+
+	if useMemoryV2 {
+		return augmentMemoryV2(ctx, kb, notes, transcript, userID, sessionID, minScore, base)
 	}
 
 	// Preferred path: a single hybrid match_memory RPC that blends vector
@@ -154,6 +167,37 @@ func DefaultAugment(ctx context.Context, kb *storage.Knowledge, notes *storage.N
 	}
 	base.Retrieved = retrieved
 
+	base.Text = FormatAugmentedUserMessage(base)
+	return base
+}
+
+func augmentMemoryV2(ctx context.Context, kb *storage.Knowledge, notes *storage.Notes, transcript, userID, sessionID string, minScore float64, base TranscriptAugmentation) TranscriptAugmentation {
+	plan := memory.PlanMemory(transcript)
+	if !plan.ShouldRetrieve {
+		base.Text = FormatAugmentedUserMessage(base)
+		return base
+	}
+	retriever := &memory.Retriever{KB: kb, Notes: notes}
+	result := retriever.Retrieve(ctx, userID, sessionID, transcript, minScore)
+	if result.Clarification != "" {
+		base.SessionNotes = result.Clarification
+	}
+	kept := make([]storage.MemoryHit, 0, len(result.Hits))
+	for _, h := range result.Hits {
+		kept = append(kept, storage.MemoryHit{
+			Source: h.Source,
+			ID:     h.ID,
+			Text:   h.Text,
+			Score:  h.Score,
+		})
+	}
+	// Enforce the V2 1,200-token budget even if ranking already capped.
+	kept = applyTokenBudget(kept, v2TokenBudgetChars, minScore)
+	if len(kept) > 8 {
+		kept = kept[:8]
+	}
+	base.Retrieved = citationTexts(kept)
+	base.Citations = toCitations(kept)
 	base.Text = FormatAugmentedUserMessage(base)
 	return base
 }

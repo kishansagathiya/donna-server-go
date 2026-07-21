@@ -17,6 +17,12 @@ type Sync struct {
 	Jobs    *storage.BackgroundJobs
 	Intents IntentQueue
 	Flags   *featureflags.Resolver
+	Memory  MemoryExtractEnqueuer
+}
+
+// MemoryExtractEnqueuer schedules structured memory extraction for new notes.
+type MemoryExtractEnqueuer interface {
+	EnqueueFromNote(ctx context.Context, userID, noteID, content string, contentVersion int64)
 }
 
 // IntentQueue extracts actionable intents from user-authored notes.
@@ -33,7 +39,7 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	if err != nil {
 		return err
 	}
-	s.enqueueEnrichment(ctx, userID, noteID, 1)
+	s.enqueueEnrichment(ctx, userID, noteID, content, 1)
 
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
 		if _, err := s.Store.SetLockedTagsForNote(ctx, userID, noteID, tags, "hashtag"); err != nil {
@@ -71,7 +77,7 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 	if err != nil {
 		return storage.Note{}, err
 	}
-	s.enqueueEnrichment(ctx, userID, note.ID, note.ContentVersion)
+	s.enqueueEnrichment(ctx, userID, note.ID, content, note.ContentVersion)
 	if s.Intents != nil {
 		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
@@ -85,7 +91,7 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 
 // enqueueEnrichment persists first, then schedules durable background jobs.
 // No synchronous LLM or embedding work runs here.
-func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID string, contentVersion int64) {
+func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID, content string, contentVersion int64) {
 	if noteID == "" {
 		return
 	}
@@ -153,6 +159,10 @@ func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID string, con
 				"error":  err.Error(),
 			})
 		}
+	}
+
+	if s.Memory != nil {
+		s.Memory.EnqueueFromNote(ctx, userID, noteID, content, contentVersion)
 	}
 
 	if err := s.Store.MarkEnrichmentQueued(ctx, userID, noteID); err != nil {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
@@ -64,6 +65,7 @@ type Engine struct {
 	KB          *storage.Knowledge
 	Notes       *storage.Notes
 	Preferences *storage.Preferences
+	Flags       *featureflags.Resolver
 	Tools       *tools.Registry
 	// ConnectorTools optionally adds per-user live connector tools for text chat.
 	ConnectorTools  ConnectorToolsFunc
@@ -308,6 +310,13 @@ func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessio
 		minScore = e.Config.MemoryMinScore
 	}
 
+	useMemoryV2 := false
+	if e.Flags != nil && userID != "" {
+		if flags, err := e.Flags.NotesMemoryV2ForUser(ctx, userID); err == nil {
+			useMemoryV2 = flags.MemoryRetrieval
+		}
+	}
+
 	var (
 		augmented      TranscriptAugmentation
 		profileSummary string
@@ -317,7 +326,7 @@ func (e *Engine) loadTurnContext(ctx context.Context, transcript, userID, sessio
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		augmented = DefaultAugment(ctx, e.KB, e.Notes, transcript, userID, sessionID, minScore)
+		augmented = DefaultAugmentOpts(ctx, e.KB, e.Notes, transcript, userID, sessionID, minScore, useMemoryV2)
 	}()
 	go func() {
 		defer wg.Done()

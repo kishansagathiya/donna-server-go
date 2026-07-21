@@ -317,7 +317,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if update.Content != nil {
 		if h.Sync != nil {
-			h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.ContentVersion)
+			h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
 		}
 		if h.Intents != nil {
 			h.Intents.EnqueueNote(userID, note.ID, note.Content)

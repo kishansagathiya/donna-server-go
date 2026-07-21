@@ -18,8 +18,10 @@ const (
 	JobTypeMemoryExtract   = "memory_extract"
 	JobTypeSmartTagEnrich  = "smart_tag_enrich"
 
-	TargetKindNote = "note"
-	TargetKindFact = "fact"
+	TargetKindNote         = "note"
+	TargetKindFact         = "fact"
+	TargetKindConversation = "conversation"
+	TargetKindSource       = "source"
 )
 
 type BackgroundJob struct {

@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,9 +17,15 @@ import (
 const maxUploadBytes = 15 * 1024 * 1024
 
 type IngestHandler struct {
-	KB    *storage.Knowledge
-	Queue *Queue
-	Notes *notes.Sync
+	KB     *storage.Knowledge
+	Queue  *Queue
+	Notes  *notes.Sync
+	Memory MemoryExtractEnqueuer
+}
+
+// MemoryExtractEnqueuer schedules structured memory extraction for new sources.
+type MemoryExtractEnqueuer interface {
+	EnqueueFromSource(ctx context.Context, userID, sourceID, content string)
 }
 
 func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +141,10 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 
 	if h.Notes != nil {
 		_ = h.Notes.FromSource(r.Context(), userID, sourceID, "document", extracted.Content, time.Now().UTC())
+	}
+
+	if h.Memory != nil {
+		h.Memory.EnqueueFromSource(r.Context(), userID, sourceID, extracted.Content)
 	}
 
 	h.KB.LogKnowledge("asset ingested", map[string]any{
