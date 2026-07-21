@@ -252,8 +252,9 @@ func (e *Extractor) extractCandidates(ctx context.Context, content string, exist
 func normalizeKind(k string) string {
 	switch strings.ToLower(strings.TrimSpace(k)) {
 	case storage.MemoryKindIdentity, storage.MemoryKindPreference, storage.MemoryKindRelationship,
-		storage.MemoryKindGoal, storage.MemoryKindProject, storage.MemoryKindHabit,
-		storage.MemoryKindLocation, storage.MemoryKindEvent, storage.MemoryKindFact, storage.MemoryKindOther:
+		storage.MemoryKindGoal, storage.MemoryKindProject, storage.MemoryKindHabit, storage.MemoryKindRoutine,
+		storage.MemoryKindLocation, storage.MemoryKindEvent, storage.MemoryKindFact, storage.MemoryKindOther,
+		storage.MemoryKindConstraint, storage.MemoryKindInstruction:
 		return strings.ToLower(strings.TrimSpace(k))
 	default:
 		return storage.MemoryKindFact

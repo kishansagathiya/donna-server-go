@@ -21,13 +21,15 @@ type MemorySuggestion struct {
 	ResolvedAt     *time.Time     `json:"resolved_at,omitempty"`
 }
 
-// MemoryFeedback records user corrections for enrichment.
+// MemoryFeedback records user corrections for enrichment / citation feedback.
 type MemoryFeedback struct {
-	ID        string         `json:"id"`
-	UserID    string         `json:"user_id"`
-	Action    string         `json:"action"`
-	Details   map[string]any `json:"details"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID           string         `json:"id"`
+	UserID       string         `json:"user_id"`
+	FactID       *string        `json:"fact_id,omitempty"`
+	SuggestionID *string        `json:"suggestion_id,omitempty"`
+	Action       string         `json:"action"`
+	Details      map[string]any `json:"details"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 // InsertTagSuggestion stores a medium-confidence tag suggestion.

@@ -17,10 +17,13 @@ const (
 	MemoryKindGoal         = "goal"
 	MemoryKindProject      = "project"
 	MemoryKindHabit        = "habit"
+	MemoryKindRoutine      = "routine"
 	MemoryKindLocation     = "location"
 	MemoryKindEvent        = "event"
 	MemoryKindFact         = "fact"
 	MemoryKindOther        = "other"
+	MemoryKindConstraint   = "constraint"
+	MemoryKindInstruction  = "instruction"
 
 	SensitivityNormal     = "normal"
 	SensitivitySensitive  = "sensitive"
@@ -30,6 +33,7 @@ const (
 	ReviewPendingReview = "pending_review"
 	ReviewRejected      = "rejected"
 	ReviewSuperseded    = "superseded"
+	ReviewOutdated      = "outdated"
 
 	EvidenceConversationTurn = "conversation_turn"
 	EvidenceNote             = "note"
@@ -39,7 +43,56 @@ const (
 
 	SuggestionKindMemory = "memory"
 	SuggestionPending    = "pending"
+	SuggestionAccepted   = "accepted"
+	SuggestionRejected   = "rejected"
+
+	FeedbackConfirm     = "confirm"
+	FeedbackReject      = "reject"
+	FeedbackEdit        = "edit"
+	FeedbackNotRelevant = "not_relevant"
+	FeedbackOutdated    = "outdated"
+	FeedbackAccept      = "accept"
+	FeedbackResolve     = "resolve"
 )
+
+// MemoryUIGroupOrder is the grouped Memory UI section order (#164).
+var MemoryUIGroupOrder = []string{
+	MemoryKindIdentity,
+	MemoryKindPreference,
+	MemoryKindRelationship,
+	MemoryKindProject,
+	MemoryKindGoal,
+	MemoryKindRoutine,
+	MemoryKindEvent,
+	MemoryKindConstraint,
+	MemoryKindInstruction,
+}
+
+// NormalizeMemoryKindForUI maps storage kinds onto UI group keys.
+func NormalizeMemoryKindForUI(kind string) string {
+	switch strings.TrimSpace(strings.ToLower(kind)) {
+	case MemoryKindIdentity:
+		return MemoryKindIdentity
+	case MemoryKindPreference:
+		return MemoryKindPreference
+	case MemoryKindRelationship:
+		return MemoryKindRelationship
+	case MemoryKindProject:
+		return MemoryKindProject
+	case MemoryKindGoal:
+		return MemoryKindGoal
+	case MemoryKindHabit, MemoryKindRoutine:
+		return MemoryKindRoutine
+	case MemoryKindEvent:
+		return MemoryKindEvent
+	case MemoryKindConstraint:
+		return MemoryKindConstraint
+	case MemoryKindInstruction:
+		return MemoryKindInstruction
+	default:
+		return MemoryKindOther
+	}
+}
 
 // MemoryFact is a kb_facts row including Notes/Memory V2 structured columns.
 type MemoryFact struct {

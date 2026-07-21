@@ -301,7 +301,7 @@ func main() {
 	log.Print("notes: GET /notes/search, POST /notes/daily-check, web-only CRUD at /notes/*", nil)
 	log.Print("intents: GET /intents, POST /intents/{id}/dismiss", nil)
 	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)
-	log.Print("memory: GET/PATCH /memory/profile, CRUD at /memory/facts", nil)
+	log.Print("memory: GET/PATCH /memory/profile, CRUD /memory/facts, review /memory/items|suggestions|feedback", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)

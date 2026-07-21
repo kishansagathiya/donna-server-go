@@ -2,6 +2,18 @@ package storage
 
 import "testing"
 
+func TestNormalizeMemoryKindForUI(t *testing.T) {
+	if got := NormalizeMemoryKindForUI("habit"); got != MemoryKindRoutine {
+		t.Fatalf("habit -> %q", got)
+	}
+	if got := NormalizeMemoryKindForUI("constraint"); got != MemoryKindConstraint {
+		t.Fatalf("constraint -> %q", got)
+	}
+	if got := NormalizeMemoryKindForUI("fact"); got != MemoryKindOther {
+		t.Fatalf("fact -> %q", got)
+	}
+}
+
 func TestProjectProfileSummary(t *testing.T) {
 	identity := "identity"
 	pref := "preference"
