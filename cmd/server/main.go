@@ -58,10 +58,9 @@ func main() {
 	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
 
 	var bgWorker *jobs.Worker
-	if cfg.BackgroundJobsEnabled {
-		bgWorker = &jobs.Worker{Store: jobStore, Handlers: map[string]jobs.Handler{}}
-		bgWorker.Start()
-		log.Print("background jobs worker enabled", nil)
+	flagResolver := &featureflags.Resolver{
+		Defaults: cfg,
+		Store:    &storage.FeatureFlags{DB: supa, Enabled: supa.Enabled()},
 	}
 	log.Print("notes & memory v2 defaults", map[string]any{
 		"notesFeed":        cfg.NotesV2Feed,
@@ -73,6 +72,18 @@ func main() {
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
+	if cfg.BackgroundJobsEnabled {
+		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
+		bgWorker = &jobs.Worker{
+			Store: jobStore,
+			Handlers: map[string]jobs.Handler{
+				storage.JobTypeSmartTagEnrich: enricher.HandleJob,
+			},
+		}
+		bgWorker.Start()
+		log.Print("background jobs worker enabled", nil)
+	}
+	_ = bgWorker
 	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 
@@ -84,7 +95,7 @@ func main() {
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
 
-	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Jobs: jobStore, Intents: intentQueue}
+	noteSync := &notes.Sync{Store: notesStore, Queue: noteIndexQueue, Jobs: jobStore, Intents: intentQueue, Flags: flagResolver}
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
 		intentQueue.EnqueueConversationTurn(input.UserID, input.ConversationID, input.TurnIndex, input.UserTranscript)
 	}
@@ -183,10 +194,6 @@ func main() {
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
 	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
-	flagResolver := &featureflags.Resolver{
-		Defaults: cfg,
-		Store:    &storage.FeatureFlags{DB: supa, Enabled: supa.Enabled()},
-	}
 	notesHandler := &notes.Handler{
 		Store:   notesStore,
 		Sync:    noteSync,

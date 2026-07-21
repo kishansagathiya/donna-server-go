@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -15,6 +16,7 @@ type Sync struct {
 	Queue   *IndexQueue
 	Jobs    *storage.BackgroundJobs
 	Intents IntentQueue
+	Flags   *featureflags.Resolver
 }
 
 // IntentQueue extracts actionable intents from user-authored notes.
@@ -34,7 +36,7 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	s.enqueueEnrichment(ctx, userID, noteID, 1)
 
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
-		if _, err := s.Store.SetTagsForNote(ctx, userID, noteID, tags); err != nil {
+		if _, err := s.Store.SetLockedTagsForNote(ctx, userID, noteID, tags, "hashtag"); err != nil {
 			return err
 		}
 	}
@@ -74,7 +76,7 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
-		if _, err := s.Store.SetTagsForNote(ctx, userID, note.ID, tags); err != nil {
+		if _, err := s.Store.SetLockedTagsForNote(ctx, userID, note.ID, tags, "hashtag"); err != nil {
 			return storage.Note{}, err
 		}
 	}
@@ -128,6 +130,31 @@ func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID string, con
 		})
 		return
 	}
+
+	smartTagging := false
+	if s.Flags != nil {
+		if flags, err := s.Flags.NotesMemoryV2ForUser(ctx, userID); err == nil {
+			smartTagging = flags.SmartTagging
+		}
+	}
+	if smartTagging {
+		tagKey := fmt.Sprintf("smart_tag_enrich:%s:%d", noteID, contentVersion)
+		if _, err := s.Jobs.Enqueue(ctx, storage.EnqueueJobInput{
+			UserID:        userID,
+			JobType:       storage.JobTypeSmartTagEnrich,
+			DedupeKey:     tagKey,
+			Payload:       payload,
+			TargetKind:    storage.TargetKindNote,
+			TargetID:      noteID,
+			TargetVersion: contentVersion,
+		}); err != nil {
+			log.Warn("smart tag enrich job enqueue failed", map[string]any{
+				"noteId": log.ShortID(noteID),
+				"error":  err.Error(),
+			})
+		}
+	}
+
 	if err := s.Store.MarkEnrichmentQueued(ctx, userID, noteID); err != nil {
 		log.Warn("mark enrichment queued failed", map[string]any{
 			"noteId": log.ShortID(noteID),
