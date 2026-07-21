@@ -42,7 +42,7 @@ func (s *Sync) FromSource(ctx context.Context, userID, sourceID, sourceType, con
 	s.enqueueEnrichment(ctx, userID, noteID, content, 1)
 
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
-		if _, err := s.Store.SetLockedTagsForNote(ctx, userID, noteID, tags, "hashtag"); err != nil {
+		if _, err := s.Store.ApplyHashtagTags(ctx, userID, noteID, tags); err != nil {
 			return err
 		}
 	}
@@ -82,7 +82,7 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
 	if tags := storage.ExtractHashtags(content); len(tags) > 0 {
-		if _, err := s.Store.SetLockedTagsForNote(ctx, userID, note.ID, tags, "hashtag"); err != nil {
+		if _, err := s.Store.ApplyHashtagTags(ctx, userID, note.ID, tags); err != nil {
 			return storage.Note{}, err
 		}
 	}

@@ -131,7 +131,7 @@ func (n *Notes) ApplyAutoTags(ctx context.Context, userID, noteID string, tags [
 	return rows, nil
 }
 
-// SetLockedTagsForNote replaces tags as locked manual/hashtag tags.
+// SetLockedTagsForNote replaces tags as locked manual tags (explicit user edit).
 func (n *Notes) SetLockedTagsForNote(ctx context.Context, userID, noteID string, tags []string, origin string) ([]string, error) {
 	if n == nil || n.DB == nil || !n.Enabled {
 		return nil, fmt.Errorf("notes disabled")
@@ -145,6 +145,26 @@ func (n *Notes) SetLockedTagsForNote(ctx context.Context, userID, noteID string,
 		"p_note_id": noteID,
 		"p_tags":    normalizeTagList(tags),
 		"p_origin":  origin,
+	}, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ApplyHashtagTags merges inline #hashtags onto a note without removing other tags.
+func (n *Notes) ApplyHashtagTags(ctx context.Context, userID, noteID string, tags []string) ([]string, error) {
+	if n == nil || n.DB == nil || !n.Enabled {
+		return nil, fmt.Errorf("notes disabled")
+	}
+	cleaned := normalizeTagList(tags)
+	if len(cleaned) == 0 {
+		return n.GetTagsForNote(ctx, userID, noteID)
+	}
+	var rows []string
+	if err := n.DB.RPC(ctx, "apply_hashtag_note_tags", map[string]any{
+		"p_user_id": userID,
+		"p_note_id": noteID,
+		"p_tags":    cleaned,
 	}, &rows); err != nil {
 		return nil, err
 	}

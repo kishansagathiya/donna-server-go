@@ -48,6 +48,8 @@ type Note struct {
 	// URL); it is never persisted and is empty on inserts/updates. Omitted from
 	// JSON when empty so the field disappears for notes without audio.
 	AudioURL string `json:"audio_url,omitempty"`
+	// Tags is populated on read (GetNoteByID); never persisted on the notes row.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // HasAudio reports whether this note has a stored dictation we can play back.
@@ -281,7 +283,11 @@ func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, e
 	if len(rows) == 0 {
 		return Note{}, fmt.Errorf("note not found")
 	}
-	return rows[0], nil
+	note := rows[0]
+	if tags, err := n.GetTagsForNote(ctx, userID, noteID); err == nil {
+		note.Tags = tags
+	}
+	return note, nil
 }
 
 // SignedAudioURL returns a short-lived signed download URL for the note's
