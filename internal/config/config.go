@@ -156,7 +156,7 @@ func Load() (*Config, error) {
 
 	personas := parseModelList(os.Getenv("DONNA_PERSONAS"))
 	if len(personas) == 0 {
-		personas = []string{"companion", "boss", "coach", "therapist", "custom"}
+		personas = []string{"companion", "boss", "coach", "listener", "custom"}
 	}
 	if !containsString(personas, "companion") {
 		personas = append([]string{"companion"}, personas...)

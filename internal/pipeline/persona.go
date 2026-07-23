@@ -36,7 +36,7 @@ var PersonaPreambles = map[string]string{
 		"Be warm but firm: reflect progress, name the next small step, and hold them to it.",
 		"Celebrate wins briefly, then keep momentum.",
 	}, " "),
-	"therapist": strings.Join([]string{
+	"listener": strings.Join([]string{
 		"You are Donna, acting as a reflective, empathetic listener.",
 		"Prioritize understanding over answers. Ask one grounding question at a time.",
 		"Never diagnose; hold space. Structure is optional — presence comes first.",
@@ -49,18 +49,27 @@ var DocumentedPersonaBehaviors = map[string]string{
 	"companion": "Warm second-brain companion; concise, personal when relevant, depth on request.",
 	"boss":      "Direct accountability boss; decisive, low fluff, next-action oriented.",
 	"coach":     "Encouraging coach; warm but firm, progress + next small step.",
-	"therapist": "Reflective listener; one grounding question, no diagnosis.",
+	"listener":  "Reflective listener; one grounding question, no diagnosis.",
 	"custom":    "User-supplied custom persona text overrides tone; quality rules still apply.",
+}
+
+// NormalizePersona maps legacy ids (e.g. "therapist") onto the current allowlist.
+func NormalizePersona(persona string) string {
+	persona = strings.TrimSpace(strings.ToLower(persona))
+	if persona == "" {
+		return "companion"
+	}
+	if persona == "therapist" {
+		return "listener"
+	}
+	return persona
 }
 
 // applyPersona prepends the persona preamble (and, for the "custom" persona, the
 // user-supplied custom text) to the base system prompt, then appends the shared
 // quality policy so every persona shares clarify/structure/memory voice rules.
 func applyPersona(basePrompt, persona, personaCustom string) string {
-	persona = strings.TrimSpace(strings.ToLower(persona))
-	if persona == "" {
-		persona = "companion"
-	}
+	persona = NormalizePersona(persona)
 
 	parts := make([]string, 0, 4)
 

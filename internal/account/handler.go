@@ -50,9 +50,7 @@ func (h *Handler) getPreferences(w http.ResponseWriter, r *http.Request, userID 
 		model = h.DefaultModel
 	}
 	persona, personaCustom, _ := h.Preferences.GetPersona(r.Context(), userID)
-	if persona == "" {
-		persona = "companion"
-	}
+	persona = normalizePersonaID(persona)
 	personaCustom = strings.TrimSpace(personaCustom)
 	isCustom := persona == "custom"
 	// Only return the custom text when the user is on the custom persona.
@@ -83,6 +81,7 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 	// Persona update (optional — only when the persona field is present).
 	persona := strings.TrimSpace(body.Persona)
 	if persona != "" {
+		persona = normalizePersonaID(persona)
 		if !h.isAllowedPersona(persona) {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 				"error":              "invalid_persona",
@@ -140,6 +139,18 @@ func (h *Handler) isAllowedPersona(persona string) bool {
 		}
 	}
 	return false
+}
+
+// normalizePersonaID maps legacy ids onto the current allowlist.
+func normalizePersonaID(persona string) string {
+	persona = strings.TrimSpace(strings.ToLower(persona))
+	if persona == "" {
+		return "companion"
+	}
+	if persona == "therapist" {
+		return "listener"
+	}
+	return persona
 }
 
 func (h *Handler) isAllowedModel(model string) bool {

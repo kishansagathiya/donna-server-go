@@ -69,9 +69,20 @@ func TestApplyPersona_customUsesUserText(t *testing.T) {
 func TestApplyPersona_personasDiffer(t *testing.T) {
 	boss := applyPersona("Base.", "boss", "")
 	coach := applyPersona("Base.", "coach", "")
-	therapist := applyPersona("Base.", "therapist", "")
-	if boss == coach || boss == therapist || coach == therapist {
+	listener := applyPersona("Base.", "listener", "")
+	if boss == coach || boss == listener || coach == listener {
 		t.Fatal("persona prompts should differ")
+	}
+}
+
+func TestApplyPersona_legacyTherapistMapsToListener(t *testing.T) {
+	legacy := applyPersona("Base.", "therapist", "")
+	current := applyPersona("Base.", "listener", "")
+	if legacy != current {
+		t.Fatalf("therapist should normalize to listener:\nlegacy=%q\ncurrent=%q", legacy, current)
+	}
+	if NormalizePersona("therapist") != "listener" {
+		t.Fatal("NormalizePersona should map therapist → listener")
 	}
 }
 
