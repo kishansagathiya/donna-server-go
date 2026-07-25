@@ -69,3 +69,18 @@ func TestNoCreateNoteBuiltin(t *testing.T) {
 		t.Fatal("create_note must not be a builtin")
 	}
 }
+
+func TestBuiltinFromConfigAllowsIntegrationBuiltins(t *testing.T) {
+	for _, name := range []string{"create_calendar_event", "send_email", "draft_message"} {
+		got, err := BuiltinFromConfig([]byte(`{"builtin":"` + name + `"}`))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if string(got) != name {
+			t.Fatalf("got %s want %s", got, name)
+		}
+	}
+	if _, err := BuiltinFromConfig([]byte(`{"builtin":"create_note"}`)); err == nil {
+		t.Fatal("create_note must remain rejected")
+	}
+}

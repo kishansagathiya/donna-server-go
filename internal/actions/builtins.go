@@ -112,7 +112,8 @@ func BuiltinFromConfig(config json.RawMessage) (BuiltinName, error) {
 	}
 	name := BuiltinName(strings.TrimSpace(cfg.Builtin))
 	switch name {
-	case BuiltinDraftMessage, BuiltinProposeReminder, BuiltinOpenURL:
+	case BuiltinDraftMessage, BuiltinProposeReminder, BuiltinOpenURL,
+		BuiltinCreateCalendarEvent, BuiltinSendEmail:
 		return name, nil
 	default:
 		return "", fmt.Errorf("unknown_builtin:%s", name)
