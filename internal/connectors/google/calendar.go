@@ -94,11 +94,8 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("reauth_required")
-	}
 	if res.StatusCode >= 300 {
-		return nil, fmt.Errorf("calendar_create_failed:%d", res.StatusCode)
+		return nil, mapGoogleAPIError("calendar_create", res.StatusCode, body)
 	}
 
 	var created struct {

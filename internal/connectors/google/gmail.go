@@ -62,14 +62,8 @@ func (a *Adapter) sendEmail(ctx context.Context, accessToken string, input map[s
 	}
 	defer res.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if res.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("reauth_required")
-	}
-	if res.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("needs_integration:google")
-	}
 	if res.StatusCode >= 300 {
-		return nil, fmt.Errorf("gmail_send_failed:%d", res.StatusCode)
+		return nil, mapGoogleAPIError("gmail_send", res.StatusCode, respBody)
 	}
 
 	var created struct {

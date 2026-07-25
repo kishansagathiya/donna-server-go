@@ -173,5 +173,7 @@ func (e *Executor) runIntegration(ctx context.Context, userID string, name Built
 }
 
 func isRetryableIntegrationError(errText string) bool {
-	return errText == "reauth_required" || strings.HasPrefix(errText, "needs_integration:")
+	return errText == "reauth_required" ||
+		strings.HasPrefix(errText, "needs_integration:") ||
+		strings.HasPrefix(errText, "google_api_not_enabled:")
 }

@@ -23,7 +23,9 @@ const (
 var googleScopes = []string{
 	"openid",
 	"email",
-	"https://www.googleapis.com/auth/calendar.events",
+	// Full calendar scope is what Google's create-events guide requires for
+	// reliable events.insert; calendar.events alone often 403s in practice.
+	"https://www.googleapis.com/auth/calendar",
 	"https://www.googleapis.com/auth/gmail.send",
 }
 
