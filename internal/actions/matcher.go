@@ -20,7 +20,9 @@ var kindToActionSlug = map[string]string{
 	"draft_message":  "draft_message",
 	"message":        "draft_message",
 	"email":          "draft_message",
-	"schedule":       "propose_reminder",
+	"schedule":       "create_calendar_event",
+	"calendar":       "create_calendar_event",
+	"create_calendar_event": "create_calendar_event",
 	"open_url":       "open_url",
 	"url":            "open_url",
 }
@@ -93,7 +95,7 @@ func buildRunInput(intent storage.Intent, actionSlug string) map[string]any {
 	for k, v := range slots {
 		out[k] = v
 	}
-	if _, ok := out["title"]; !ok && (actionSlug == "propose_reminder") {
+	if _, ok := out["title"]; !ok && (actionSlug == "propose_reminder" || actionSlug == "create_calendar_event") {
 		out["title"] = intent.Summary
 	}
 	if _, ok := out["body"]; !ok && actionSlug == "draft_message" {

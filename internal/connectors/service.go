@@ -12,14 +12,15 @@ import (
 
 // Service wires the provider registry, store, and feature flags.
 type Service struct {
-	Registry           *Registry
-	Store              *Store
-	Notes              *storage.Notes
-	KB                 *storage.Knowledge
+	Registry            *Registry
+	Store               *Store
+	Notes               *storage.Notes
+	KB                  *storage.Knowledge
 	IntegrationsEnabled bool
-	GranolaEnabled     bool
-	PublicAPIBase      string // e.g. https://api.example.com — used for OAuth redirect_uri
-	WebAppBase         string // e.g. https://donna.app — post-OAuth web redirect
+	GranolaEnabled      bool
+	GoogleEnabled       bool
+	PublicAPIBase       string // e.g. https://api.example.com — used for OAuth redirect_uri
+	WebAppBase          string // e.g. https://donna.app — post-OAuth web redirect
 }
 
 func (s *Service) Enabled() bool {
@@ -34,6 +35,8 @@ func (s *Service) ProviderEnabled(provider string) bool {
 	switch provider {
 	case ProviderGranola:
 		return s.GranolaEnabled
+	case ProviderGoogle:
+		return s.GoogleEnabled
 	default:
 		return false
 	}
@@ -196,6 +199,37 @@ func (s *Service) runSyncJob(adapter ConnectorAdapter, connectionID string, full
 		"meetings":  result.MeetingsUpserted,
 		"transcripts": result.TranscriptsSaved,
 	})
+}
+
+// CreateCalendarEvent executes the Google Calendar write action for a user.
+func (s *Service) CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error) {
+	if !s.ProviderEnabled(ProviderGoogle) {
+		return nil, fmt.Errorf("needs_integration:google")
+	}
+	adapter, ok := s.Registry.Get(ProviderGoogle)
+	if !ok {
+		return nil, fmt.Errorf("needs_integration:google")
+	}
+	googleAdapter, ok := adapter.(interface {
+		CreateCalendarEvent(ctx context.Context, conn Connection, input map[string]any) (map[string]any, error)
+		RefreshIfNeeded(ctx context.Context, conn Connection) (Connection, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("needs_integration:google")
+	}
+	conn, err := s.Store.GetConnection(ctx, userID, ProviderGoogle)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil || (conn.Status != StatusConnected && conn.Status != StatusPartial && conn.Status != StatusSyncing) {
+		return nil, fmt.Errorf("needs_integration:google")
+	}
+	refreshed, err := googleAdapter.RefreshIfNeeded(ctx, *conn)
+	if err != nil {
+		_ = s.Store.MarkReauthRequired(ctx, conn.ID, "token refresh failed; reconnect required")
+		return nil, fmt.Errorf("reauth_required")
+	}
+	return googleAdapter.CreateCalendarEvent(ctx, refreshed, input)
 }
 
 func isAuthError(err error) bool {

@@ -9,6 +9,7 @@ import (
 
 const (
 	ProviderGranola = "granola"
+	ProviderGoogle  = "google"
 
 	StatusDisconnected   = "disconnected"
 	StatusConnecting     = "connecting"
@@ -42,6 +43,7 @@ type Capabilities struct {
 	GetMeetings       bool `json:"get_meetings"`
 	Transcripts       bool `json:"transcripts"`
 	Folders           bool `json:"folders"`
+	CalendarWrite     bool `json:"calendar_write"`
 	HistoryDays       *int `json:"history_days,omitempty"` // e.g. 30 for Basic
 	PlanHint          string `json:"plan_hint,omitempty"`  // "basic" | "paid" | ""
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -18,6 +19,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/google"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
@@ -145,6 +147,18 @@ func main() {
 				KB:    kbStore,
 			}
 			registry.Register(granolaAdapter)
+			googleEnabled := cfg.GoogleEnabled &&
+				strings.TrimSpace(cfg.GoogleOAuthClientID) != "" &&
+				strings.TrimSpace(cfg.GoogleOAuthClientSecret) != ""
+			if googleEnabled {
+				registry.Register(&google.Adapter{
+					Store:        store,
+					ClientID:     cfg.GoogleOAuthClientID,
+					ClientSecret: cfg.GoogleOAuthClientSecret,
+				})
+			} else if cfg.GoogleEnabled {
+				log.Warn("google integration requested but OAuth client credentials missing", nil)
+			}
 			connectorSvc = &connectors.Service{
 				Registry:            registry,
 				Store:               store,
@@ -152,13 +166,16 @@ func main() {
 				KB:                  kbStore,
 				IntegrationsEnabled: true,
 				GranolaEnabled:      cfg.GranolaEnabled,
+				GoogleEnabled:       googleEnabled,
 				PublicAPIBase:       cfg.PublicAPIBase,
 				WebAppBase:          cfg.WebAppBase,
 			}
+			actionExecutor.Integrations = connectorSvc
 			syncWorker = &connectors.HourlySyncWorker{Service: connectorSvc}
 			syncWorker.Start()
 			log.Print("integrations enabled", map[string]any{
 				"granola": cfg.GranolaEnabled,
+				"google":  googleEnabled,
 			})
 		}
 	}

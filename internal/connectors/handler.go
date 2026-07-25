@@ -25,6 +25,10 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 	r.With(authMiddleware).Delete("/integrations/granola/imports", h.DeleteGranolaImports)
 	// OAuth callback is unauthenticated (browser redirect) but validates one-time state.
 	r.Get("/integrations/granola/callback", h.CallbackGranola)
+
+	r.With(authMiddleware).Post("/integrations/google/authorize", h.AuthorizeGoogle)
+	r.With(authMiddleware).Delete("/integrations/google", h.DisconnectGoogle)
+	r.Get("/integrations/google/callback", h.CallbackGoogle)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -89,16 +93,16 @@ func (h *Handler) CallbackGranola(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		h.redirectAfterOAuth(w, r, ReturnToWeb, false, errParam)
+		h.redirectAfterOAuth(w, r, ProviderGranola, ReturnToWeb, false, errParam)
 		return
 	}
 	if code == "" || state == "" {
-		h.redirectAfterOAuth(w, r, ReturnToWeb, false, "missing_code_or_state")
+		h.redirectAfterOAuth(w, r, ProviderGranola, ReturnToWeb, false, "missing_code_or_state")
 		return
 	}
 	userID, status, err := adapter.HandleCallback(r.Context(), state, code)
 	if err != nil {
-		h.redirectAfterOAuth(w, r, ReturnToWeb, false, sanitizeErr(err))
+		h.redirectAfterOAuth(w, r, ProviderGranola, ReturnToWeb, false, sanitizeErr(err))
 		return
 	}
 	_ = userID
@@ -111,7 +115,7 @@ func (h *Handler) CallbackGranola(w http.ResponseWriter, r *http.Request) {
 	if returnTo == "" {
 		returnTo = ReturnToWeb
 	}
-	h.redirectAfterOAuth(w, r, returnTo, true, "")
+	h.redirectAfterOAuth(w, r, ProviderGranola, returnTo, true, "")
 	// Kick off initial backfill.
 	if userID != "" {
 		_ = h.Service.ScheduleSync(r.Context(), userID, ProviderGranola, true)
@@ -235,9 +239,102 @@ func (h *Handler) DeleteGranolaImports(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-func (h *Handler) redirectAfterOAuth(w http.ResponseWriter, r *http.Request, returnTo string, ok bool, errCode string) {
+func (h *Handler) AuthorizeGoogle(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil || !h.Service.ProviderEnabled(ProviderGoogle) {
+		writeErr(w, http.StatusNotFound, "integrations_disabled", "Google integration is not enabled")
+		return
+	}
+	var body authorizeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_body", "expected JSON body")
+		return
+	}
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeErr(w, http.StatusUnauthorized, "auth_required", "sign in required")
+		return
+	}
+	result, err := h.Service.StartAuthorize(r.Context(), userID, ProviderGoogle, body.ReturnTo)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "integrations_disabled" {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, "authorize_failed", sanitizeErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) CallbackGoogle(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil || !h.Service.Enabled() {
+		http.Error(w, "integrations disabled", http.StatusNotFound)
+		return
+	}
+	adapter, ok := h.Service.Registry.Get(ProviderGoogle)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		h.redirectAfterOAuth(w, r, ProviderGoogle, ReturnToWeb, false, errParam)
+		return
+	}
+	if code == "" || state == "" {
+		h.redirectAfterOAuth(w, r, ProviderGoogle, ReturnToWeb, false, "missing_code_or_state")
+		return
+	}
+	userID, status, err := adapter.HandleCallback(r.Context(), state, code)
+	if err != nil {
+		h.redirectAfterOAuth(w, r, ProviderGoogle, ReturnToWeb, false, sanitizeErr(err))
+		return
+	}
+	_ = userID
+	_ = status
+	returnTo := r.URL.Query().Get("return_to")
+	if g, ok := adapter.(interface{ LastReturnTo() string }); ok && g.LastReturnTo() != "" {
+		returnTo = g.LastReturnTo()
+	}
+	if returnTo == "" {
+		returnTo = ReturnToWeb
+	}
+	h.redirectAfterOAuth(w, r, ProviderGoogle, returnTo, true, "")
+}
+
+func (h *Handler) DisconnectGoogle(w http.ResponseWriter, r *http.Request) {
+	if h.Service == nil || !h.Service.Enabled() {
+		writeErr(w, http.StatusNotFound, "integrations_disabled", "integrations are not enabled")
+		return
+	}
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeErr(w, http.StatusUnauthorized, "auth_required", "sign in required")
+		return
+	}
+	adapter, ok := h.Service.Registry.Get(ProviderGoogle)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "integrations_disabled", "Google integration is not enabled")
+		return
+	}
+	conn, err := h.Service.Store.GetConnection(r.Context(), userID, ProviderGoogle)
+	if err != nil || conn == nil {
+		writeErr(w, http.StatusNotFound, "not_connected", "no Google connection")
+		return
+	}
+	_ = adapter.Disconnect(r.Context(), *conn)
+	conn, _ = h.Service.Store.GetConnection(r.Context(), userID, ProviderGoogle)
+	writeJSON(w, http.StatusOK, adapter.Status(r.Context(), conn))
+}
+
+func (h *Handler) redirectAfterOAuth(w http.ResponseWriter, r *http.Request, provider, returnTo string, ok bool, errCode string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		provider = ProviderGranola
+	}
 	if returnTo == ReturnToMobile {
-		u := "donna://integrations/granola"
+		u := "donna://integrations/" + provider
 		q := url.Values{}
 		if ok {
 			q.Set("ok", "1")
@@ -254,7 +351,7 @@ func (h *Handler) redirectAfterOAuth(w http.ResponseWriter, r *http.Request, ret
 	if base == "" {
 		base = "/"
 	}
-	dest := base + "/app?integrations=granola"
+	dest := base + "/app?integrations=" + url.QueryEscape(provider)
 	if ok {
 		dest += "&ok=1"
 	} else {

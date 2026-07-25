@@ -40,9 +40,13 @@ type Config struct {
 	// ChatToolsEnabled controls mid-turn tools (fetch_url / browse_page). Default true.
 	ChatToolsEnabled bool
 
-	// Integrations feature flags (Granola connector).
+	// Integrations feature flags (Granola + Google connectors).
 	IntegrationsEnabled bool
 	GranolaEnabled      bool
+	GoogleEnabled       bool
+	// Google OAuth web client credentials (Calendar write). Required when GoogleEnabled.
+	GoogleOAuthClientID     string
+	GoogleOAuthClientSecret string
 	// ConnectorEncryptionKey is base64 of 32 bytes for AES-256-GCM. Required to enable connectors.
 	ConnectorEncryptionKey string
 	// PublicAPIBase is the externally reachable API origin used for OAuth redirect_uri.
@@ -170,6 +174,9 @@ func Load() (*Config, error) {
 
 	integrationsEnabled := parseBool(os.Getenv("DONNA_INTEGRATIONS_ENABLED"))
 	granolaEnabled := parseBool(os.Getenv("DONNA_GRANOLA_ENABLED"))
+	googleEnabled := parseBool(os.Getenv("DONNA_GOOGLE_ENABLED"))
+	googleClientID := strings.TrimSpace(os.Getenv("DONNA_GOOGLE_OAUTH_CLIENT_ID"))
+	googleClientSecret := strings.TrimSpace(os.Getenv("DONNA_GOOGLE_OAUTH_CLIENT_SECRET"))
 	connectorKey := strings.TrimSpace(os.Getenv("DONNA_CONNECTOR_ENCRYPTION_KEY"))
 	publicAPIBase := strings.TrimSpace(os.Getenv("DONNA_PUBLIC_API_BASE"))
 	if publicAPIBase == "" {
@@ -209,11 +216,14 @@ func Load() (*Config, error) {
 		Personas:               personas,
 		BrowserURL:             browserURL,
 		ChatToolsEnabled:       chatToolsEnabled,
-		IntegrationsEnabled:    integrationsEnabled,
-		GranolaEnabled:         granolaEnabled,
-		ConnectorEncryptionKey: connectorKey,
-		PublicAPIBase:          publicAPIBase,
-		WebAppBase:             webAppBase,
+		IntegrationsEnabled:     integrationsEnabled,
+		GranolaEnabled:          granolaEnabled,
+		GoogleEnabled:           googleEnabled,
+		GoogleOAuthClientID:     googleClientID,
+		GoogleOAuthClientSecret: googleClientSecret,
+		ConnectorEncryptionKey:  connectorKey,
+		PublicAPIBase:           publicAPIBase,
+		WebAppBase:              webAppBase,
 		NotesV2Feed:            notesV2Feed,
 		NotesV2SmartTagging:    notesV2SmartTagging,
 		MemoryV2Extraction:     memoryV2Extraction,

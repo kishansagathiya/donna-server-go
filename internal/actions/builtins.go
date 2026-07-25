@@ -13,9 +13,10 @@ import (
 type BuiltinName string
 
 const (
-	BuiltinDraftMessage     BuiltinName = "draft_message"
-	BuiltinProposeReminder  BuiltinName = "propose_reminder"
-	BuiltinOpenURL          BuiltinName = "open_url"
+	BuiltinDraftMessage        BuiltinName = "draft_message"
+	BuiltinProposeReminder     BuiltinName = "propose_reminder"
+	BuiltinOpenURL             BuiltinName = "open_url"
+	BuiltinCreateCalendarEvent BuiltinName = "create_calendar_event"
 )
 
 type BuiltinResult struct {
@@ -33,9 +34,17 @@ func (r *BuiltinRunner) Run(ctx context.Context, name BuiltinName, input map[str
 		return r.proposeReminder(input)
 	case BuiltinOpenURL:
 		return r.openURL(input)
+	case BuiltinCreateCalendarEvent:
+		// Side-effecting integrations are handled by Executor.Integrations.
+		return BuiltinResult{}, fmt.Errorf("integration_builtin:%s", name)
 	default:
 		return BuiltinResult{}, fmt.Errorf("unknown_builtin:%s", name)
 	}
+}
+
+// IsIntegrationBuiltin reports builtins that require a connected provider.
+func IsIntegrationBuiltin(name BuiltinName) bool {
+	return name == BuiltinCreateCalendarEvent
 }
 
 func (r *BuiltinRunner) draftMessage(input map[string]any) (BuiltinResult, error) {

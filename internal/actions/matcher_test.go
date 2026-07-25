@@ -8,7 +8,8 @@ func TestKindToActionSlug(t *testing.T) {
 		"follow_up":     "draft_message",
 		"draft_message": "draft_message",
 		"open_url":      "open_url",
-		"schedule":      "propose_reminder",
+		"schedule":      "create_calendar_event",
+		"calendar":      "create_calendar_event",
 	}
 	for kind, want := range cases {
 		if got := kindToActionSlug[kind]; got != want {

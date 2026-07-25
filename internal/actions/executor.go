@@ -4,14 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
+// IntegrationEffects runs side-effecting builtins that need connected providers.
+type IntegrationEffects interface {
+	CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error)
+}
+
 type Executor struct {
-	Store   *storage.ActionsStore
-	Builtin *BuiltinRunner
+	Store        *storage.ActionsStore
+	Builtin      *BuiltinRunner
+	Integrations IntegrationEffects
 }
 
 func (e *Executor) ConfirmAndExecute(ctx context.Context, userID, runID string) (storage.ActionRun, error) {
@@ -87,13 +94,38 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 		return storage.ActionRun{}, err
 	}
 
-	if e.Builtin == nil {
-		e.Builtin = &BuiltinRunner{}
+	input := InputMap(run.Input)
+	var (
+		output map[string]any
+		runErr error
+	)
+	if IsIntegrationBuiltin(builtinName) {
+		output, runErr = e.runIntegration(ctx, userID, builtinName, input)
+	} else {
+		if e.Builtin == nil {
+			e.Builtin = &BuiltinRunner{}
+		}
+		var result BuiltinResult
+		result, runErr = e.Builtin.Run(ctx, builtinName, input)
+		output = result.Output
 	}
-	result, runErr := e.Builtin.Run(ctx, builtinName, InputMap(run.Input))
+
 	finished := time.Now().UTC().Format(time.RFC3339)
 	if runErr != nil {
 		errText := runErr.Error()
+		// Missing/expired integration: keep the proposal so the user can connect and retry.
+		if isRetryableIntegrationError(errText) {
+			retried, patchErr := e.Store.UpdateActionRun(ctx, userID, run.ID, map[string]any{
+				"status":      "proposed",
+				"error":       errText,
+				"started_at":  nil,
+				"finished_at": nil,
+			})
+			if patchErr != nil {
+				return storage.ActionRun{}, patchErr
+			}
+			return retried, runErr
+		}
 		failed, patchErr := e.Store.UpdateActionRun(ctx, userID, run.ID, map[string]any{
 			"status":      "failed",
 			"error":       errText,
@@ -105,7 +137,7 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 		return failed, runErr
 	}
 
-	outputJSON, err := json.Marshal(result.Output)
+	outputJSON, err := json.Marshal(output)
 	if err != nil {
 		return storage.ActionRun{}, err
 	}
@@ -123,4 +155,20 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 		_ = e.Store.MarkIntentActed(ctx, userID, *run.IntentID)
 	}
 	return succeeded, nil
+}
+
+func (e *Executor) runIntegration(ctx context.Context, userID string, name BuiltinName, input map[string]any) (map[string]any, error) {
+	switch name {
+	case BuiltinCreateCalendarEvent:
+		if e.Integrations == nil {
+			return nil, fmt.Errorf("needs_integration:google")
+		}
+		return e.Integrations.CreateCalendarEvent(ctx, userID, input)
+	default:
+		return nil, fmt.Errorf("unknown_integration_builtin:%s", name)
+	}
+}
+
+func isRetryableIntegrationError(errText string) bool {
+	return errText == "reauth_required" || strings.HasPrefix(errText, "needs_integration:")
 }

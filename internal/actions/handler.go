@@ -38,20 +38,16 @@ func (h *Handler) ListIntents(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "open"
 	}
-	intents, err := h.Store.ListIntents(r.Context(), userID, status, queryLimit(r, 50), queryOffset(r))
+	intents, err := h.Store.ListIntentsInbox(r.Context(), userID, status, queryLimit(r, 50), queryOffset(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_failed", "message": err.Error()})
 		return
 	}
 
-	out := make([]IntentWithRun, 0, len(intents))
-	for _, intent := range intents {
-		item := IntentWithRun{Intent: intent}
-		if run, err := h.Store.FindActiveRunForIntent(r.Context(), userID, intent.ID); err == nil {
-			enriched := h.enrichRun(r.Context(), run)
-			item.Run = &enriched
-		}
-		out = append(out, item)
+	out, err := h.attachActiveRuns(r.Context(), userID, intents)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_failed", "message": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -97,9 +93,10 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_failed", "message": err.Error()})
 		return
 	}
-	out := make([]storage.ActionRun, 0, len(runs))
-	for _, run := range runs {
-		out = append(out, h.enrichRun(r.Context(), run))
+	out, err := h.enrichRuns(r.Context(), runs)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_failed", "message": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -152,12 +149,92 @@ func (h *Handler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.enrichRun(r.Context(), run))
 }
 
+func (h *Handler) attachActiveRuns(ctx context.Context, userID string, intents []storage.Intent) ([]IntentWithRun, error) {
+	out := make([]IntentWithRun, 0, len(intents))
+	if len(intents) == 0 {
+		return out, nil
+	}
+
+	intentIDs := make([]string, 0, len(intents))
+	for _, intent := range intents {
+		intentIDs = append(intentIDs, intent.ID)
+	}
+	runs, err := h.Store.ListActiveRunsForIntents(ctx, userID, intentIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	runByIntent := make(map[string]storage.ActionRun, len(runs))
+	actionIDs := make([]string, 0, len(runs))
+	seenAction := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		if run.IntentID == nil || *run.IntentID == "" {
+			continue
+		}
+		// First (newest) active run wins per intent.
+		if _, exists := runByIntent[*run.IntentID]; exists {
+			continue
+		}
+		runByIntent[*run.IntentID] = run
+		if _, ok := seenAction[run.ActionID]; !ok {
+			seenAction[run.ActionID] = struct{}{}
+			actionIDs = append(actionIDs, run.ActionID)
+		}
+	}
+
+	actionsByID, err := h.Store.GetActionsByIDs(ctx, actionIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, intent := range intents {
+		item := IntentWithRun{Intent: intent}
+		if run, ok := runByIntent[intent.ID]; ok {
+			enriched := applyActionMeta(run, actionsByID[run.ActionID])
+			item.Run = &enriched
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (h *Handler) enrichRuns(ctx context.Context, runs []storage.ActionRun) ([]storage.ActionRun, error) {
+	if len(runs) == 0 {
+		return []storage.ActionRun{}, nil
+	}
+	actionIDs := make([]string, 0, len(runs))
+	seen := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		if _, ok := seen[run.ActionID]; ok {
+			continue
+		}
+		seen[run.ActionID] = struct{}{}
+		actionIDs = append(actionIDs, run.ActionID)
+	}
+	actionsByID, err := h.Store.GetActionsByIDs(ctx, actionIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storage.ActionRun, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, applyActionMeta(run, actionsByID[run.ActionID]))
+	}
+	return out, nil
+}
+
 func (h *Handler) enrichRun(ctx context.Context, run storage.ActionRun) storage.ActionRun {
 	if h.Store == nil {
 		return run
 	}
 	action, err := h.Store.GetActionByID(ctx, run.ActionID)
 	if err != nil {
+		return run
+	}
+	return applyActionMeta(run, action)
+}
+
+func applyActionMeta(run storage.ActionRun, action storage.Action) storage.ActionRun {
+	if action.ID == "" {
 		return run
 	}
 	slug := action.Slug

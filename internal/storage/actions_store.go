@@ -95,8 +95,22 @@ func (a *ActionsStore) selectIntentColumns() string {
 	return "id,user_id,kind,status,summary,slots,source_type,source_id,source_turn_index,confidence,created_at,updated_at"
 }
 
+// Inbox list omits bulky slots; detail paths still use selectIntentColumns.
+func (a *ActionsStore) selectIntentInboxColumns() string {
+	return "id,user_id,kind,status,summary,source_type,source_id,source_turn_index,confidence,created_at,updated_at"
+}
+
 func (a *ActionsStore) selectRunColumns() string {
 	return "id,user_id,intent_id,action_id,status,input,output,error,confirmed_at,started_at,finished_at,created_at,updated_at"
+}
+
+// Inbox run projection skips input/output jsonb blobs.
+func (a *ActionsStore) selectRunInboxColumns() string {
+	return "id,user_id,intent_id,action_id,status,error,confirmed_at,started_at,finished_at,created_at,updated_at"
+}
+
+func (a *ActionsStore) selectActionInboxColumns() string {
+	return "id,slug,name,risk"
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +272,15 @@ func (a *ActionsStore) findOpenIntent(ctx context.Context, userID string, in New
 }
 
 func (a *ActionsStore) ListIntents(ctx context.Context, userID, status string, limit, offset int) ([]Intent, error) {
+	return a.listIntents(ctx, userID, status, limit, offset, a.selectIntentColumns())
+}
+
+// ListIntentsInbox returns intents with slim columns for the Actions inbox.
+func (a *ActionsStore) ListIntentsInbox(ctx context.Context, userID, status string, limit, offset int) ([]Intent, error) {
+	return a.listIntents(ctx, userID, status, limit, offset, a.selectIntentInboxColumns())
+}
+
+func (a *ActionsStore) listIntents(ctx context.Context, userID, status string, limit, offset int, columns string) ([]Intent, error) {
 	if a == nil || !a.Enabled || a.DB == nil {
 		return nil, fmt.Errorf("actions_disabled")
 	}
@@ -272,7 +295,7 @@ func (a *ActionsStore) ListIntents(ctx context.Context, userID, status string, l
 	}
 
 	q := url.Values{}
-	q.Set("select", a.selectIntentColumns())
+	q.Set("select", columns)
 	q.Set("user_id", "eq."+userID)
 	if status != "" {
 		q.Set("status", "eq."+status)
@@ -288,7 +311,65 @@ func (a *ActionsStore) ListIntents(ctx context.Context, userID, status string, l
 	if rows == nil {
 		rows = []Intent{}
 	}
+	for i := range rows {
+		if len(rows[i].Slots) == 0 {
+			rows[i].Slots = json.RawMessage(`{}`)
+		}
+	}
 	return rows, nil
+}
+
+// ListActiveRunsForIntents fetches active runs for many intents in one query.
+func (a *ActionsStore) ListActiveRunsForIntents(ctx context.Context, userID string, intentIDs []string) ([]ActionRun, error) {
+	if a == nil || !a.Enabled || a.DB == nil {
+		return nil, fmt.Errorf("actions_disabled")
+	}
+	if len(intentIDs) == 0 {
+		return []ActionRun{}, nil
+	}
+	q := url.Values{}
+	q.Set("select", a.selectRunInboxColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("intent_id", "in.("+strings.Join(intentIDs, ",")+")")
+	q.Set("status", "in.(proposed,confirmed,running)")
+	q.Set("order", "created_at.desc")
+
+	var rows []ActionRun
+	if err := a.DB.Get(ctx, "action_runs", q, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []ActionRun{}
+	}
+	for i := range rows {
+		if len(rows[i].Input) == 0 {
+			rows[i].Input = json.RawMessage(`{}`)
+		}
+	}
+	return rows, nil
+}
+
+// GetActionsByIDs fetches action registry rows for enrichment in one query.
+func (a *ActionsStore) GetActionsByIDs(ctx context.Context, actionIDs []string) (map[string]Action, error) {
+	if a == nil || !a.Enabled || a.DB == nil {
+		return nil, fmt.Errorf("actions_disabled")
+	}
+	out := make(map[string]Action, len(actionIDs))
+	if len(actionIDs) == 0 {
+		return out, nil
+	}
+	q := url.Values{}
+	q.Set("select", a.selectActionInboxColumns())
+	q.Set("id", "in.("+strings.Join(actionIDs, ",")+")")
+
+	var rows []Action
+	if err := a.DB.Get(ctx, "actions", q, &rows); err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ID] = row
+	}
+	return out, nil
 }
 
 func (a *ActionsStore) GetIntent(ctx context.Context, userID, intentID string) (Intent, error) {
