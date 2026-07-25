@@ -7,6 +7,8 @@ func TestKindToActionSlug(t *testing.T) {
 		"remind":        "propose_reminder",
 		"follow_up":     "draft_message",
 		"draft_message": "draft_message",
+		"email":         "send_email",
+		"send_email":    "send_email",
 		"open_url":      "open_url",
 		"schedule":      "create_calendar_event",
 		"calendar":      "create_calendar_event",

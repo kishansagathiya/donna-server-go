@@ -24,6 +24,7 @@ var googleScopes = []string{
 	"openid",
 	"email",
 	"https://www.googleapis.com/auth/calendar.events",
+	"https://www.googleapis.com/auth/gmail.send",
 }
 
 func (a *Adapter) oauthConfig(redirectURI string) (*oauth2.Config, error) {

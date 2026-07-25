@@ -44,6 +44,7 @@ type Capabilities struct {
 	Transcripts       bool `json:"transcripts"`
 	Folders           bool `json:"folders"`
 	CalendarWrite     bool `json:"calendar_write"`
+	GmailSend         bool `json:"gmail_send"`
 	HistoryDays       *int `json:"history_days,omitempty"` // e.g. 30 for Basic
 	PlanHint          string `json:"plan_hint,omitempty"`  // "basic" | "paid" | ""
 }

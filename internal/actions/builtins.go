@@ -17,6 +17,7 @@ const (
 	BuiltinProposeReminder     BuiltinName = "propose_reminder"
 	BuiltinOpenURL             BuiltinName = "open_url"
 	BuiltinCreateCalendarEvent BuiltinName = "create_calendar_event"
+	BuiltinSendEmail           BuiltinName = "send_email"
 )
 
 type BuiltinResult struct {
@@ -34,7 +35,7 @@ func (r *BuiltinRunner) Run(ctx context.Context, name BuiltinName, input map[str
 		return r.proposeReminder(input)
 	case BuiltinOpenURL:
 		return r.openURL(input)
-	case BuiltinCreateCalendarEvent:
+	case BuiltinCreateCalendarEvent, BuiltinSendEmail:
 		// Side-effecting integrations are handled by Executor.Integrations.
 		return BuiltinResult{}, fmt.Errorf("integration_builtin:%s", name)
 	default:
@@ -44,7 +45,7 @@ func (r *BuiltinRunner) Run(ctx context.Context, name BuiltinName, input map[str
 
 // IsIntegrationBuiltin reports builtins that require a connected provider.
 func IsIntegrationBuiltin(name BuiltinName) bool {
-	return name == BuiltinCreateCalendarEvent
+	return name == BuiltinCreateCalendarEvent || name == BuiltinSendEmail
 }
 
 func (r *BuiltinRunner) draftMessage(input map[string]any) (BuiltinResult, error) {

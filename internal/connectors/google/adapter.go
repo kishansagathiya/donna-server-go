@@ -118,6 +118,7 @@ func (a *Adapter) HandleCallback(ctx context.Context, rawState, code string) (st
 		ResourceURL:           st.ResourceURL,
 		Capabilities: connectors.Capabilities{
 			CalendarWrite: true,
+			GmailSend:     true,
 		},
 		// Write-only provider — no hourly sync imports.
 		SyncEnabled:         false,
@@ -169,7 +170,7 @@ func (a *Adapter) RefreshIfNeeded(ctx context.Context, conn connectors.Connectio
 func (a *Adapter) DiscoverCapabilities(ctx context.Context, conn connectors.Connection) (connectors.Capabilities, error) {
 	_ = ctx
 	_ = conn
-	return connectors.Capabilities{CalendarWrite: true}, nil
+	return connectors.Capabilities{CalendarWrite: true, GmailSend: true}, nil
 }
 
 func (a *Adapter) VerifyWorkspace(ctx context.Context, conn connectors.Connection) error {
@@ -230,9 +231,13 @@ func (a *Adapter) Status(ctx context.Context, conn *connectors.Connection) conne
 	st.AccountLabel = conn.AccountLabel
 	st.WorkspaceLabel = conn.WorkspaceLabel
 	st.Capabilities = conn.Capabilities
-	if !st.Capabilities.CalendarWrite &&
-		(conn.Status == connectors.StatusConnected || conn.Status == connectors.StatusPartial) {
-		st.Capabilities.CalendarWrite = true
+	if conn.Status == connectors.StatusConnected || conn.Status == connectors.StatusPartial {
+		if !st.Capabilities.CalendarWrite {
+			st.Capabilities.CalendarWrite = true
+		}
+		if !st.Capabilities.GmailSend {
+			st.Capabilities.GmailSend = true
+		}
 	}
 	st.InitialSyncStatus = conn.InitialSyncStatus
 	st.ImportedMeetingCount = conn.ImportedMeetingCount
@@ -252,15 +257,32 @@ func (a *Adapter) Status(ctx context.Context, conn *connectors.Connection) conne
 
 // CreateCalendarEvent creates a Google Calendar event for a connected user.
 func (a *Adapter) CreateCalendarEvent(ctx context.Context, conn connectors.Connection, input map[string]any) (map[string]any, error) {
-	refreshed, err := a.RefreshIfNeeded(ctx, conn)
+	refreshed, err := a.requireAccessToken(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("reauth_required")
-	}
-	if refreshed.Status != connectors.StatusConnected && refreshed.Status != connectors.StatusPartial {
-		return nil, fmt.Errorf("needs_integration:google")
-	}
-	if strings.TrimSpace(refreshed.AccessToken) == "" {
-		return nil, fmt.Errorf("needs_integration:google")
+		return nil, err
 	}
 	return a.createEvent(ctx, refreshed.AccessToken, input)
+}
+
+// SendEmail sends an email via Gmail for a connected user.
+func (a *Adapter) SendEmail(ctx context.Context, conn connectors.Connection, input map[string]any) (map[string]any, error) {
+	refreshed, err := a.requireAccessToken(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	return a.sendEmail(ctx, refreshed.AccessToken, input)
+}
+
+func (a *Adapter) requireAccessToken(ctx context.Context, conn connectors.Connection) (connectors.Connection, error) {
+	refreshed, err := a.RefreshIfNeeded(ctx, conn)
+	if err != nil {
+		return connectors.Connection{}, fmt.Errorf("reauth_required")
+	}
+	if refreshed.Status != connectors.StatusConnected && refreshed.Status != connectors.StatusPartial {
+		return connectors.Connection{}, fmt.Errorf("needs_integration:google")
+	}
+	if strings.TrimSpace(refreshed.AccessToken) == "" {
+		return connectors.Connection{}, fmt.Errorf("needs_integration:google")
+	}
+	return refreshed, nil
 }

@@ -37,6 +37,9 @@ func TestIsIntegrationBuiltin(t *testing.T) {
 	if !IsIntegrationBuiltin(BuiltinCreateCalendarEvent) {
 		t.Fatal("create_calendar_event should be integration builtin")
 	}
+	if !IsIntegrationBuiltin(BuiltinSendEmail) {
+		t.Fatal("send_email should be integration builtin")
+	}
 	if IsIntegrationBuiltin(BuiltinDraftMessage) {
 		t.Fatal("draft_message should not be integration builtin")
 	}

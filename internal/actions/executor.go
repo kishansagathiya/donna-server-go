@@ -13,6 +13,7 @@ import (
 // IntegrationEffects runs side-effecting builtins that need connected providers.
 type IntegrationEffects interface {
 	CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error)
+	SendEmail(ctx context.Context, userID string, input map[string]any) (map[string]any, error)
 }
 
 type Executor struct {
@@ -158,12 +159,14 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 }
 
 func (e *Executor) runIntegration(ctx context.Context, userID string, name BuiltinName, input map[string]any) (map[string]any, error) {
+	if e.Integrations == nil {
+		return nil, fmt.Errorf("needs_integration:google")
+	}
 	switch name {
 	case BuiltinCreateCalendarEvent:
-		if e.Integrations == nil {
-			return nil, fmt.Errorf("needs_integration:google")
-		}
 		return e.Integrations.CreateCalendarEvent(ctx, userID, input)
+	case BuiltinSendEmail:
+		return e.Integrations.SendEmail(ctx, userID, input)
 	default:
 		return nil, fmt.Errorf("unknown_integration_builtin:%s", name)
 	}

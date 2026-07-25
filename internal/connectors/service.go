@@ -201,35 +201,55 @@ func (s *Service) runSyncJob(adapter ConnectorAdapter, connectionID string, full
 	})
 }
 
-// CreateCalendarEvent executes the Google Calendar write action for a user.
-func (s *Service) CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error) {
+type googleActionAdapter interface {
+	CreateCalendarEvent(ctx context.Context, conn Connection, input map[string]any) (map[string]any, error)
+	SendEmail(ctx context.Context, conn Connection, input map[string]any) (map[string]any, error)
+	RefreshIfNeeded(ctx context.Context, conn Connection) (Connection, error)
+}
+
+func (s *Service) withGoogleAction(ctx context.Context, userID string) (googleActionAdapter, Connection, error) {
 	if !s.ProviderEnabled(ProviderGoogle) {
-		return nil, fmt.Errorf("needs_integration:google")
+		return nil, Connection{}, fmt.Errorf("needs_integration:google")
 	}
 	adapter, ok := s.Registry.Get(ProviderGoogle)
 	if !ok {
-		return nil, fmt.Errorf("needs_integration:google")
+		return nil, Connection{}, fmt.Errorf("needs_integration:google")
 	}
-	googleAdapter, ok := adapter.(interface {
-		CreateCalendarEvent(ctx context.Context, conn Connection, input map[string]any) (map[string]any, error)
-		RefreshIfNeeded(ctx context.Context, conn Connection) (Connection, error)
-	})
+	googleAdapter, ok := adapter.(googleActionAdapter)
 	if !ok {
-		return nil, fmt.Errorf("needs_integration:google")
+		return nil, Connection{}, fmt.Errorf("needs_integration:google")
 	}
 	conn, err := s.Store.GetConnection(ctx, userID, ProviderGoogle)
 	if err != nil {
-		return nil, err
+		return nil, Connection{}, err
 	}
 	if conn == nil || (conn.Status != StatusConnected && conn.Status != StatusPartial && conn.Status != StatusSyncing) {
-		return nil, fmt.Errorf("needs_integration:google")
+		return nil, Connection{}, fmt.Errorf("needs_integration:google")
 	}
 	refreshed, err := googleAdapter.RefreshIfNeeded(ctx, *conn)
 	if err != nil {
 		_ = s.Store.MarkReauthRequired(ctx, conn.ID, "token refresh failed; reconnect required")
-		return nil, fmt.Errorf("reauth_required")
+		return nil, Connection{}, fmt.Errorf("reauth_required")
 	}
-	return googleAdapter.CreateCalendarEvent(ctx, refreshed, input)
+	return googleAdapter, refreshed, nil
+}
+
+// CreateCalendarEvent executes the Google Calendar write action for a user.
+func (s *Service) CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error) {
+	adapter, conn, err := s.withGoogleAction(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return adapter.CreateCalendarEvent(ctx, conn, input)
+}
+
+// SendEmail executes the Gmail send action for a user.
+func (s *Service) SendEmail(ctx context.Context, userID string, input map[string]any) (map[string]any, error) {
+	adapter, conn, err := s.withGoogleAction(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return adapter.SendEmail(ctx, conn, input)
 }
 
 func isAuthError(err error) bool {
