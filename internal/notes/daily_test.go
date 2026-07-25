@@ -5,36 +5,52 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
-func TestDailyChecker_fallbackBriefing(t *testing.T) {
-	today := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	notes := []storage.NoteSummary{
-		{ID: "1", Title: "Ship feature", IsUrgent: true, IsImportant: true, NoteDate: today.Format(time.RFC3339)},
-		{ID: "2", Title: "Plan Q3", IsImportant: true, NoteDate: today.Format(time.RFC3339)},
-		{ID: "3", Title: "Reply email", IsUrgent: true, NoteDate: today.Format(time.RFC3339)},
-		{ID: "4", Title: "Old note", NoteDate: today.AddDate(0, 0, -45).Format(time.RFC3339)},
+func TestTasksFromNotes_priorityOrder(t *testing.T) {
+	doFirst := []storage.NoteSummary{
+		{ID: "1", Title: "Ship feature", IsUrgent: true, IsImportant: true},
+	}
+	schedule := []storage.NoteSummary{
+		{ID: "2", Title: "Plan Q3", IsImportant: true},
+	}
+	delegate := []storage.NoteSummary{
+		{ID: "3", Title: "Reply email", IsUrgent: true},
+	}
+	later := []storage.NoteSummary{
+		{ID: "4", Title: "Nice to have"},
 	}
 
-	dc := &DailyChecker{}
-	briefing := dc.fallbackBriefing(notes, today)
+	tasks := append(
+		tasksFromNotes(doFirst, PriorityDoFirst, "do first"),
+		tasksFromNotes(schedule, PrioritySchedule, "schedule")...,
+	)
+	tasks = append(tasks, tasksFromNotes(delegate, PriorityDelegate, "delegate")...)
+	tasks = append(tasks, tasksFromNotes(later, PriorityLater, "later")...)
 
-	if len(briefing.Tasks) != 3 {
-		t.Fatalf("tasks = %d, want 3", len(briefing.Tasks))
+	if len(tasks) != 4 {
+		t.Fatalf("tasks = %d, want 4", len(tasks))
 	}
-	if briefing.Tasks[0].Priority != "do_first" {
-		t.Fatalf("first task priority = %q, want do_first", briefing.Tasks[0].Priority)
+	want := []string{PriorityDoFirst, PrioritySchedule, PriorityDelegate, PriorityLater}
+	for i, p := range want {
+		if tasks[i].Priority != p {
+			t.Fatalf("tasks[%d].Priority = %q, want %q", i, tasks[i].Priority, p)
+		}
 	}
-	if len(briefing.Outdated) != 1 || briefing.Outdated[0].NoteID != "4" {
-		t.Fatalf("outdated = %#v, want note 4", briefing.Outdated)
+}
+
+func TestTodaySummary(t *testing.T) {
+	got := todaySummary(2, 1, 0, 3)
+	if !strings.Contains(got, "2 to do first") || !strings.Contains(got, "1 to schedule") || !strings.Contains(got, "3 for later") {
+		t.Fatalf("unexpected summary: %q", got)
 	}
-	if briefing.Summary == "" {
-		t.Fatal("expected non-empty summary")
+	if todaySummary(0, 0, 0, 0) != "Nothing on your list today." {
+		t.Fatalf("empty summary unexpected: %q", todaySummary(0, 0, 0, 0))
 	}
 }
 
@@ -67,6 +83,52 @@ func TestDailyChecker_Check_emptyNotes(t *testing.T) {
 	}
 }
 
+func TestDailyChecker_Check_ordersByEisenhower(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, _ := url.ParseQuery(r.URL.RawQuery)
+		urgent := q.Get("is_urgent")
+		important := q.Get("is_important")
+
+		var notes []storage.NoteSummary
+		switch {
+		case urgent == "eq.true" && important == "eq.true":
+			notes = []storage.NoteSummary{{ID: "do", Title: "Do first", IsUrgent: true, IsImportant: true}}
+		case urgent == "eq.false" && important == "eq.true":
+			notes = []storage.NoteSummary{{ID: "sched", Title: "Schedule", IsImportant: true}}
+		case urgent == "eq.true" && important == "eq.false":
+			notes = []storage.NoteSummary{{ID: "del", Title: "Delegate", IsUrgent: true}}
+		case urgent == "eq.false" && important == "eq.false":
+			notes = []storage.NoteSummary{{ID: "later", Title: "Later"}}
+		}
+		_ = json.NewEncoder(w).Encode(notes)
+	}))
+	t.Cleanup(srv.Close)
+
+	dc := &DailyChecker{
+		Store: &storage.Notes{
+			DB:      storage.NewSupabase(srv.URL, "test-key"),
+			Enabled: true,
+		},
+	}
+
+	briefing, err := dc.Check(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(briefing.Tasks) != 3 {
+		t.Fatalf("tasks = %d, want 3 (later notes are excluded from Today)", len(briefing.Tasks))
+	}
+	want := []string{PriorityDoFirst, PrioritySchedule, PriorityDelegate}
+	for i, p := range want {
+		if briefing.Tasks[i].Priority != p {
+			t.Fatalf("tasks[%d].Priority = %q, want %q", i, briefing.Tasks[i].Priority, p)
+		}
+	}
+	if briefing.Outdated == nil || len(briefing.Outdated) != 0 {
+		t.Fatalf("outdated should be empty, got %#v", briefing.Outdated)
+	}
+}
+
 func TestHandler_DailyCheck_missingToken(t *testing.T) {
 	h := &Handler{Daily: &DailyChecker{Store: &storage.Notes{Enabled: true}}}
 	req := httptest.NewRequest(http.MethodPost, "/notes/daily-check", nil)
@@ -81,11 +143,13 @@ func TestHandler_DailyCheck_missingToken(t *testing.T) {
 
 func TestNormalizePriority(t *testing.T) {
 	cases := map[string]string{
-		"do_first": "do_first",
-		"Do-First": "do_first",
-		"schedule": "schedule",
-		"delegate": "delegate",
-		"unknown":  "schedule",
+		"do_first":  PriorityDoFirst,
+		"Do-First":  PriorityDoFirst,
+		"schedule":  PrioritySchedule,
+		"delegate":  PriorityDelegate,
+		"later":     PriorityLater,
+		"eliminate": PriorityLater,
+		"unknown":   PrioritySchedule,
 	}
 	for input, want := range cases {
 		if got := normalizePriority(input); got != want {

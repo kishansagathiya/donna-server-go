@@ -211,7 +211,7 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/knowledge/ingest", ingestHandler.ServeHTTP)
 
-	dailyChecker := &notes.DailyChecker{Store: notesStore, LLM: llm, Conversations: convStore}
+	dailyChecker := &notes.DailyChecker{Store: notesStore}
 	notesHandler := &notes.Handler{
 		Store:   notesStore,
 		Sync:    noteSync,
