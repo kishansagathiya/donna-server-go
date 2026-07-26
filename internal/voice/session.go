@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -46,6 +47,7 @@ type Session struct {
 	conversationID string
 	turnIndex      int
 	mode           pipeline.InteractionMode
+	clientNoteID   string
 	ended          bool
 	writeMu        sync.Mutex
 }
@@ -118,6 +120,14 @@ func (s *Session) handleSessionStart(ctx context.Context, msg *protocol.ClientMe
 	}
 	if msg.SessionID != nil && *msg.SessionID != "" {
 		s.sessionID = *msg.SessionID
+	}
+	s.clientNoteID = ""
+	if msg.ClientNoteID != nil {
+		if id := strings.TrimSpace(*msg.ClientNoteID); id != "" {
+			if parsed, err := uuid.Parse(id); err == nil {
+				s.clientNoteID = parsed.String()
+			}
+		}
 	}
 
 	if err := s.send(protocol.SessionReady(s.sessionID, s.userID)); err != nil {
@@ -333,28 +343,51 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		"timings":      result.Timings,
 	})
 
-	_ = s.send(protocol.TurnDone(result.Timings, result.Skipped))
-	s.sendPhase(protocol.TurnPhaseIdle)
-
+	noteID := ""
 	if result.Transcript != "" && !result.Skipped && !result.UsedRetry {
 		if s.mode.IsNotes() {
 			if s.notes != nil {
 				content := result.Transcript
-				// Hold a local copy of the wav bytes for the goroutine so the
-				// outer `wavData` slice isn't reused before the upload runs.
 				audioBytes := wavData
-				go func() {
-					audio := &storage.NoteAudioInput{
-						WAV:  audioBytes,
-						Mime: "audio/wav",
-					}
-					if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil, audio); err != nil {
+				audio := &storage.NoteAudioInput{
+					WAV:  audioBytes,
+					Mime: "audio/wav",
+				}
+				if s.clientNoteID != "" {
+					// Device capture uploads pass a stable clientNoteId. Create
+					// synchronously before turn.done so retries stay idempotent
+					// and the app can drop its local placeholder immediately.
+					note, err := s.notes.CreateManualWithID(
+						ctx,
+						s.userID,
+						s.clientNoteID,
+						content,
+						nil,
+						audio,
+					)
+					if err != nil {
 						log.Warn("failed to create note from voice", map[string]any{
 							"session": log.ShortID(s.sessionID),
 							"error":   err.Error(),
 						})
+						s.sendPhase(protocol.TurnPhaseError)
+						s.sendError("note_create_failed", "Failed to save note")
+						s.sendPhase(protocol.TurnPhaseIdle)
+						return nil
 					}
-				}()
+					noteID = note.ID
+				} else {
+					// Phone dictation keeps the previous fire-and-forget path so
+					// turn.done is not blocked on note-audio upload latency.
+					go func() {
+						if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil, audio); err != nil {
+							log.Warn("failed to create note from voice", map[string]any{
+								"session": log.ShortID(s.sessionID),
+								"error":   err.Error(),
+							})
+						}
+					}()
+				}
 			}
 		} else {
 			if s.engine.KB != nil {
@@ -387,6 +420,9 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 			}
 		}
 	}
+
+	_ = s.send(protocol.TurnDoneWithNoteID(result.Timings, result.Skipped, noteID))
+	s.sendPhase(protocol.TurnPhaseIdle)
 
 	return nil
 }

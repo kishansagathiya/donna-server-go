@@ -18,6 +18,31 @@ func TestTurnDoneJSON(t *testing.T) {
 	}
 }
 
+func TestTurnDoneWithNoteIDJSON(t *testing.T) {
+	raw, err := SerializeServerMessage(TurnDoneWithNoteID(TurnTimings{
+		STTMs: 10, TotalMs: 20,
+	}, false, "11111111-1111-4111-8111-111111111111"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"noteId":"11111111-1111-4111-8111-111111111111"`) {
+		t.Fatalf("expected noteId in payload, got %s", raw)
+	}
+	if strings.Contains(raw, `"skipped"`) {
+		t.Fatalf("did not expect skipped for successful turn: %s", raw)
+	}
+}
+
+func TestParseClientMessage_clientNoteId(t *testing.T) {
+	msg, err := ParseClientMessage(`{"type":"session.start","mode":"notes","clientNoteId":"11111111-1111-4111-8111-111111111111"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ClientNoteID == nil || *msg.ClientNoteID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("unexpected clientNoteId: %#v", msg.ClientNoteID)
+	}
+}
+
 func TestSerializeParse_roundTrip(t *testing.T) {
 	tests := []ServerMessage{
 		SessionReady("sess-1", "user-1"),

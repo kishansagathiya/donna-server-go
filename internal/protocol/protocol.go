@@ -36,6 +36,8 @@ type ClientMessage struct {
 	UserID    *string `json:"userId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
 	Mode      *string `json:"mode,omitempty"`
+	// ClientNoteID, when set in notes mode, is used for idempotent note creates.
+	ClientNoteID *string `json:"clientNoteId,omitempty"`
 
 	Seq        *int    `json:"seq,omitempty"`
 	Format     *string `json:"format,omitempty"`
@@ -52,15 +54,16 @@ type ServerMessage struct {
 	Phase     *TurnPhase `json:"phase,omitempty"`
 	Text      *string    `json:"text,omitempty"`
 
-	Seq          *int    `json:"seq,omitempty"`
-	AudioFormat  *string `json:"format,omitempty"`
-	AudioData    *string `json:"data,omitempty"`
-	SampleRate   *int    `json:"sampleRate,omitempty"`
-	Channels     *int    `json:"channels,omitempty"`
-	Timings      *TurnTimings `json:"timings,omitempty"`
-	Skipped      *bool   `json:"skipped,omitempty"`
-	Code         *string `json:"code,omitempty"`
-	Message      *string `json:"message,omitempty"`
+	Seq         *int         `json:"seq,omitempty"`
+	AudioFormat *string      `json:"format,omitempty"`
+	AudioData   *string      `json:"data,omitempty"`
+	SampleRate  *int         `json:"sampleRate,omitempty"`
+	Channels    *int         `json:"channels,omitempty"`
+	Timings     *TurnTimings `json:"timings,omitempty"`
+	Skipped     *bool        `json:"skipped,omitempty"`
+	NoteID      *string      `json:"noteId,omitempty"`
+	Code        *string      `json:"code,omitempty"`
+	Message     *string      `json:"message,omitempty"`
 }
 
 func ParseClientMessage(raw string) (*ClientMessage, error) {
@@ -132,12 +135,20 @@ func AudioOut(seq int, format, data string, sampleRate, channels int) ServerMess
 }
 
 func TurnDone(timings TurnTimings, skipped bool) ServerMessage {
+	return TurnDoneWithNoteID(timings, skipped, "")
+}
+
+func TurnDoneWithNoteID(timings TurnTimings, skipped bool, noteID string) ServerMessage {
 	msg := ServerMessage{
 		Type:    "turn.done",
 		Timings: &timings,
 	}
 	if skipped {
 		msg.Skipped = &skipped
+	}
+	if noteID != "" {
+		id := noteID
+		msg.NoteID = &id
 	}
 	return msg
 }
