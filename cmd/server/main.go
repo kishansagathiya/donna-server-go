@@ -184,7 +184,6 @@ func main() {
 		Config:      cfg,
 		STT:         stt,
 		LLM:         llm,
-		TTS:         providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey),
 		KB:          kbStore,
 		Notes:       notesStore,
 		Preferences: preferencesStore,
@@ -281,12 +280,10 @@ func main() {
 	conversations.RegisterRoutes(r, authMiddleware, conversationsHandler)
 
 	voiceHandler := &voice.Handler{
-		Config:        cfg,
-		Auth:          authCfg,
-		Engine:        engine,
-		Conversations: convStore,
-		Queue:         compileQueue,
-		Notes:         noteSync,
+		Config: cfg,
+		Auth:   authCfg,
+		Engine: engine,
+		Notes:  noteSync,
 	}
 	r.Get("/voice", voiceHandler.ServeHTTP)
 

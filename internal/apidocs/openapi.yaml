@@ -23,14 +23,17 @@ info:
     ## Voice WebSocket protocol
 
     After connecting to `/voice`, exchange JSON text frames using the schemas in
-    **VoiceClientMessage** and **VoiceServerMessage** below. Typical flow:
+    **VoiceClientMessage** and **VoiceServerMessage** below. Voice is
+    speech-to-text only; talk-mode clients send the transcript through
+    `POST /chat` for the shared text chat harness. Typical talk-mode flow:
 
-    1. Client sends `session.start`
+    1. Client sends `session.start` (`mode: talk`)
     2. Server responds with `session.ready` and `turn.phase: idle`
     3. Client streams `audio.chunk` frames (base64 PCM16)
-    4. Client sends `turn.end` to trigger STT → LLM → TTS
-    5. Server emits `turn.transcript`, `turn.reply`, `audio.out` chunks, then `turn.done`
-    6. Client sends `session.end` to close the session
+    4. Client sends `turn.end` to trigger STT
+    5. Server emits `turn.transcript`, then `turn.done`
+    6. Client sends `session.end`, then posts the transcript to `/chat`
+    7. Notes mode (`mode: notes`) still creates a note from the transcript on `turn.done`
   version: 1.0.0
   contact:
     name: Donna
@@ -875,11 +878,11 @@ components:
         |------|---------|
         | `session.ready` | Session initialized (`sessionId`, `userId`) |
         | `turn.phase` | Pipeline phase update (`phase`) |
-        | `turn.transcript` | STT result (`text`) |
-        | `turn.reply` | LLM reply text (`text`) |
-        | `audio.out` | TTS audio chunk (`data` base64, `format`, `seq`, optional `sampleRate`/`channels`) |
-        | `turn.done` | Turn complete (`timings`, optional `skipped`) |
+        | `turn.transcript` | STT result (`text`) — client sends this through `POST /chat` in talk mode |
+        | `turn.done` | Turn complete (`timings`, optional `skipped`, optional `noteId` for notes mode) |
         | `error` | Error (`code`, `message`) |
+
+        Legacy `turn.reply` / `audio.out` frames are unused; talk replies come from `/chat`.
       properties:
         type:
           type: string
@@ -887,8 +890,6 @@ components:
             - session.ready
             - turn.phase
             - turn.transcript
-            - turn.reply
-            - audio.out
             - turn.done
             - error
         sessionId:

@@ -11,11 +11,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/protocol"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/wav"
@@ -28,40 +26,32 @@ type audioChunkMeta struct {
 }
 
 type Session struct {
-	cfg            *config.Config
-	engine         *pipeline.Engine
-	conversations  *storage.Conversations
-	queue          *knowledge.Queue
-	notes          *notes.Sync
-	conn           *websocket.Conn
-	sessionID      string
-	userID         string
-	history        []providers.ChatMessage
-	audioChunks    [][]byte
-	audioMeta      *audioChunkMeta
-	busy           bool
-	started        bool
-	chunkCount     int
-	totalPCMBytes  int
-	hasRetried     bool
-	conversationID string
-	turnIndex      int
-	mode           pipeline.InteractionMode
-	clientNoteID   string
-	ended          bool
-	writeMu        sync.Mutex
+	cfg           *config.Config
+	engine        *pipeline.Engine
+	notes         *notes.Sync
+	conn          *websocket.Conn
+	sessionID     string
+	userID        string
+	audioChunks   [][]byte
+	audioMeta     *audioChunkMeta
+	busy          bool
+	started       bool
+	chunkCount    int
+	totalPCMBytes int
+	mode          pipeline.InteractionMode
+	clientNoteID  string
+	ended         bool
+	writeMu       sync.Mutex
 }
 
-func NewSession(conn *websocket.Conn, cfg *config.Config, engine *pipeline.Engine, conversations *storage.Conversations, queue *knowledge.Queue, noteSync *notes.Sync, userID string) *Session {
+func NewSession(conn *websocket.Conn, cfg *config.Config, engine *pipeline.Engine, noteSync *notes.Sync, userID string) *Session {
 	s := &Session{
-		cfg:           cfg,
-		engine:        engine,
-		conversations: conversations,
-		queue:         queue,
-		notes:         noteSync,
-		conn:          conn,
-		sessionID:     uuid.NewString(),
-		userID:        userID,
+		cfg:       cfg,
+		engine:    engine,
+		notes:     noteSync,
+		conn:      conn,
+		sessionID: uuid.NewString(),
+		userID:    userID,
 	}
 	if s.userID == "" {
 		s.userID = uuid.NewString()
@@ -89,7 +79,7 @@ func (s *Session) HandleMessage(ctx context.Context, raw string) error {
 			"chunks":   s.chunkCount,
 			"pcmBytes": s.totalPCMBytes,
 		})
-		// Run pipeline off the read loop so outbound audio frames are not stalled.
+		// Run STT off the read loop so outbound frames are not stalled.
 		go s.handleTurnEnd(context.Background())
 		return nil
 	case "session.end":
@@ -109,7 +99,6 @@ func (s *Session) handleSessionStart(ctx context.Context, msg *protocol.ClientMe
 		return nil
 	}
 	s.started = true
-	s.hasRetried = false
 	s.mode = pipeline.ModeTalk
 	if msg.Mode != nil {
 		s.mode = pipeline.ParseMode(*msg.Mode)
@@ -143,39 +132,13 @@ func (s *Session) handleSessionStart(ctx context.Context, msg *protocol.ClientMe
 	return nil
 }
 
-func (s *Session) ensureConversation(ctx context.Context) error {
-	if s.conversationID != "" {
-		return nil
-	}
-	if s.conversations == nil || !s.conversations.Enabled || !s.cfg.RequireAuth {
-		return nil
-	}
-
-	conversationID, err := s.conversations.Create(ctx, s.userID, s.sessionID)
-	if err != nil {
-		log.Warn("failed to create conversation", map[string]any{
-			"session": log.ShortID(s.sessionID),
-			"error":   err.Error(),
-		})
-		return err
-	}
-	s.conversationID = conversationID
-	return nil
-}
-
 func (s *Session) End() {
 	if s.ended {
 		return
 	}
 	s.ended = true
-	if s.conversationID != "" {
-		if s.conversations != nil {
-			s.conversations.EndAsync(s.conversationID)
-		}
-		if s.queue != nil {
-			s.queue.EnqueueSessionCompile(s.userID, s.conversationID)
-		}
-	}
+	// Talk-mode chat persistence lives on POST /chat. Notes-mode voice uploads
+	// do not create conversation rows here.
 }
 
 func (s *Session) handleAudioChunk(msg *protocol.ClientMessage) {
@@ -286,31 +249,24 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		SampleRate: audioMeta.sampleRate,
 		Channels:   audioMeta.channels,
 	})
-	log.Print("turn commit — running pipeline", map[string]any{
+	log.Print("turn commit — transcribing", map[string]any{
 		"session":       log.ShortID(s.sessionID),
 		"chunks":        committedChunks,
 		"pcmBytes":      committedPCMBytes,
 		"wavBytes":      len(wavData),
 		"approxSeconds": approxSeconds,
+		"mode":          string(s.mode),
 	})
 
-	result, err := s.engine.RunVoiceTurn(ctx, wavData, append([]providers.ChatMessage(nil), s.history...), pipeline.TurnCallbacks{
+	result, err := s.engine.RunVoiceTurn(ctx, wavData, nil, pipeline.TurnCallbacks{
 		OnPhase: func(phase protocol.TurnPhase) {
 			s.sendPhase(phase)
 		},
 		OnTranscript: func(text string) {
 			_ = s.send(protocol.TurnTranscript(text))
 		},
-		OnReply: func(text string) {
-			_ = s.send(protocol.TurnReply(text))
-		},
-		OnAudioChunk: func(seq int, chunk providers.AudioChunk) {
-			encoded := base64.StdEncoding.EncodeToString(chunk.Data)
-			_ = s.send(protocol.AudioOut(seq, chunk.Format, encoded, chunk.SampleRate, chunk.Channels))
-		},
 	}, pipeline.TurnOptions{
 		AudioMeta: quality.AudioQualityMeta,
-		CanRetry:  !s.hasRetried,
 		UserID:    s.userID,
 		SessionID: s.sessionID,
 		Mode:      s.mode,
@@ -326,115 +282,66 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		return nil
 	}
 
-	if result.UsedRetry {
-		s.hasRetried = true
-	}
-
-	if result.Transcript != "" && !result.Skipped && !result.UsedRetry && !s.mode.IsNotes() {
-		s.appendHistory(result.Transcript, result.ReplyText)
-	}
-
 	log.Print("turn complete", map[string]any{
-		"session":      log.ShortID(s.sessionID),
-		"transcript":   result.Transcript,
-		"replyPreview": truncate(result.ReplyText, 80),
-		"skipped":      result.Skipped,
-		"skipReason":   result.SkipReason,
-		"timings":      result.Timings,
+		"session":    log.ShortID(s.sessionID),
+		"transcript": result.Transcript,
+		"skipped":    result.Skipped,
+		"skipReason": result.SkipReason,
+		"timings":    result.Timings,
 	})
 
 	noteID := ""
-	if result.Transcript != "" && !result.Skipped && !result.UsedRetry {
-		if s.mode.IsNotes() {
-			if s.notes != nil {
-				content := result.Transcript
-				audioBytes := wavData
-				audio := &storage.NoteAudioInput{
-					WAV:  audioBytes,
-					Mime: "audio/wav",
+	if result.Transcript != "" && !result.Skipped && s.mode.IsNotes() {
+		if s.notes != nil {
+			content := result.Transcript
+			audioBytes := wavData
+			audio := &storage.NoteAudioInput{
+				WAV:  audioBytes,
+				Mime: "audio/wav",
+			}
+			if s.clientNoteID != "" {
+				// Device capture uploads pass a stable clientNoteId. Create
+				// synchronously before turn.done so retries stay idempotent
+				// and the app can drop its local placeholder immediately.
+				note, err := s.notes.CreateManualWithID(
+					ctx,
+					s.userID,
+					s.clientNoteID,
+					content,
+					nil,
+					audio,
+				)
+				if err != nil {
+					log.Warn("failed to create note from voice", map[string]any{
+						"session": log.ShortID(s.sessionID),
+						"error":   err.Error(),
+					})
+					s.sendPhase(protocol.TurnPhaseError)
+					s.sendError("note_create_failed", "Failed to save note")
+					s.sendPhase(protocol.TurnPhaseIdle)
+					return nil
 				}
-				if s.clientNoteID != "" {
-					// Device capture uploads pass a stable clientNoteId. Create
-					// synchronously before turn.done so retries stay idempotent
-					// and the app can drop its local placeholder immediately.
-					note, err := s.notes.CreateManualWithID(
-						ctx,
-						s.userID,
-						s.clientNoteID,
-						content,
-						nil,
-						audio,
-					)
-					if err != nil {
+				noteID = note.ID
+			} else {
+				// Phone dictation keeps the previous fire-and-forget path so
+				// turn.done is not blocked on note-audio upload latency.
+				go func() {
+					if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil, audio); err != nil {
 						log.Warn("failed to create note from voice", map[string]any{
 							"session": log.ShortID(s.sessionID),
 							"error":   err.Error(),
 						})
-						s.sendPhase(protocol.TurnPhaseError)
-						s.sendError("note_create_failed", "Failed to save note")
-						s.sendPhase(protocol.TurnPhaseIdle)
-						return nil
 					}
-					noteID = note.ID
-				} else {
-					// Phone dictation keeps the previous fire-and-forget path so
-					// turn.done is not blocked on note-audio upload latency.
-					go func() {
-						if _, err := s.notes.CreateManual(context.Background(), s.userID, content, nil, audio); err != nil {
-							log.Warn("failed to create note from voice", map[string]any{
-								"session": log.ShortID(s.sessionID),
-								"error":   err.Error(),
-							})
-						}
-					}()
-				}
-			}
-		} else {
-			if s.engine.KB != nil {
-				knowledge.PersistLiveFactsAsync(s.engine.KB, knowledge.LiveFactsInput{
-					UserID:         s.userID,
-					Transcript:     result.Transcript,
-					ConversationID: s.conversationID,
-					TurnIndex:      s.turnIndex,
-				})
-			}
-
-			if err := s.ensureConversation(ctx); err == nil && s.conversationID != "" {
-				turnIndex := s.turnIndex
-				s.turnIndex++
-
-				saveInput := storage.SaveTurnInput{
-					ConversationID:      s.conversationID,
-					UserID:              s.userID,
-					TurnIndex:           turnIndex,
-					UserTranscript:      result.Transcript,
-					AssistantTranscript: result.ReplyText,
-					UserWav:             wavData,
-					Timings:             result.Timings,
-				}
-				if result.AssistantAudio != nil {
-					saveInput.AssistantAudio = result.AssistantAudio.Data
-					saveInput.AssistantFormat = result.AssistantAudio.Format
-				}
-				s.conversations.PersistTurnAsync(saveInput)
+				}()
 			}
 		}
 	}
 
+	// Talk mode: client receives turn.transcript and sends it through POST /chat.
 	_ = s.send(protocol.TurnDoneWithNoteID(result.Timings, result.Skipped, noteID))
 	s.sendPhase(protocol.TurnPhaseIdle)
 
 	return nil
-}
-
-func (s *Session) appendHistory(transcript, replyText string) {
-	s.history = append(s.history,
-		providers.ChatMessage{Role: "user", Content: transcript},
-		providers.ChatMessage{Role: "assistant", Content: replyText},
-	)
-	for len(s.history) > s.cfg.MaxHistoryMessages {
-		s.history = s.history[1:]
-	}
 }
 
 func (s *Session) resetTurnBuffer() {
@@ -504,11 +411,4 @@ func derefString(v *string) string {
 		return ""
 	}
 	return *v
-}
-
-func truncate(text string, n int) string {
-	if len(text) <= n {
-		return text
-	}
-	return text[:n]
 }
