@@ -161,10 +161,17 @@ func (p *Preferences) SetTimezone(ctx context.Context, userID, timezone string) 
 			return fmt.Errorf("invalid_timezone")
 		}
 	}
+	row, _ := p.loadRow(ctx, userID)
 	body := map[string]any{
 		"user_id":    userID,
 		"timezone":   timezone,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	// llm_model is NOT NULL — preserve existing or seed a placeholder on first write.
+	if strings.TrimSpace(row.LLMModel) != "" {
+		body["llm_model"] = row.LLMModel
+	} else {
+		body["llm_model"] = "openai/gpt-5.4"
 	}
 	if err := p.DB.Upsert(ctx, "user_preferences", "user_id", body, nil); err != nil {
 		return err

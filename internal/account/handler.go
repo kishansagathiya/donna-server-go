@@ -58,20 +58,23 @@ func (h *Handler) getPreferences(w http.ResponseWriter, r *http.Request, userID 
 	if !isCustom {
 		customOut = ""
 	}
+	timezone, _ := h.Preferences.GetTimezone(r.Context(), userID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"llm_model":            model,
-		"available_models":     h.Models,
-		"persona":              persona,
-		"persona_custom":       customOut,
-		"available_personas":   h.Personas,
+		"llm_model":          model,
+		"available_models":   h.Models,
+		"persona":            persona,
+		"persona_custom":     customOut,
+		"available_personas": h.Personas,
+		"timezone":           timezone,
 	})
 }
 
 func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, userID string) {
 	var body struct {
-		LLMModel     string `json:"llm_model"`
-		Persona      string `json:"persona"`
+		LLMModel      string  `json:"llm_model"`
+		Persona       string  `json:"persona"`
 		PersonaCustom *string `json:"persona_custom"`
+		Timezone      *string `json:"timezone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
@@ -119,6 +122,20 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 		}
 	}
 
+	// Timezone update (optional — pointer so clients can clear with "").
+	var timezoneOut string
+	if body.Timezone != nil {
+		timezoneOut = strings.TrimSpace(*body.Timezone)
+		if err := h.Preferences.SetTimezone(r.Context(), userID, timezoneOut); err != nil {
+			if strings.Contains(err.Error(), "invalid_timezone") {
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid_timezone"})
+				return
+			}
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "preferences_failed", "message": err.Error()})
+			return
+		}
+	}
+
 	resp := map[string]any{}
 	if body.LLMModel != "" {
 		resp["llm_model"] = body.LLMModel
@@ -128,6 +145,9 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 		if body.PersonaCustom != nil {
 			resp["persona_custom"] = strings.TrimSpace(*body.PersonaCustom)
 		}
+	}
+	if body.Timezone != nil {
+		resp["timezone"] = timezoneOut
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
