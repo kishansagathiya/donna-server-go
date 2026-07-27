@@ -8,7 +8,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o server ./cmd/server
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/server .
 # Railway routes to the PORT env var at runtime (typically 8080).

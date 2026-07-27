@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	_ "time/tzdata" // embed IANA zones for LoadLocation in Alpine/scratch images
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
