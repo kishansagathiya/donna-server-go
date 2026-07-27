@@ -158,7 +158,10 @@ func (p *Preferences) SetTimezone(ctx context.Context, userID, timezone string) 
 	timezone = strings.TrimSpace(timezone)
 	if timezone != "" {
 		if _, err := time.LoadLocation(timezone); err != nil {
-			return fmt.Errorf("invalid_timezone")
+			// Accept Profile-listed zones even when OS zoneinfo is missing.
+			if !isKnownProfileTimezone(timezone) {
+				return fmt.Errorf("invalid_timezone")
+			}
 		}
 	}
 	row, _ := p.loadRow(ctx, userID)
@@ -178,6 +181,18 @@ func (p *Preferences) SetTimezone(ctx context.Context, userID, timezone string) 
 	}
 	p.invalidate(userID)
 	return nil
+}
+
+func isKnownProfileTimezone(name string) bool {
+	switch name {
+	case "Asia/Kolkata", "Asia/Calcutta", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo",
+		"Europe/London", "Europe/Paris", "Europe/Berlin",
+		"America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+		"America/Sao_Paulo", "Australia/Sydney", "Pacific/Auckland":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Preferences) invalidate(userID string) {

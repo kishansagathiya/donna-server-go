@@ -69,9 +69,9 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 	if tzName == "" {
 		return nil, fmt.Errorf("timezone_required")
 	}
-	loc, err := time.LoadLocation(tzName)
+	loc, err := loadLocation(tzName)
 	if err != nil {
-		return nil, fmt.Errorf("invalid_timezone:%s", tzName)
+		return nil, err
 	}
 
 	start, end, err := resolveEventWindow(input, time.Now().In(loc), loc)

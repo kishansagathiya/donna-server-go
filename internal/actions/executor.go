@@ -33,6 +33,15 @@ func (e *Executor) ConfirmAndExecute(ctx context.Context, userID, runID string) 
 	switch run.Status {
 	case "proposed", "confirmed":
 		// proceed
+	case "failed":
+		// Allow one-click retry after transient integration/timezone issues.
+		errText := ""
+		if run.Error != nil {
+			errText = *run.Error
+		}
+		if !isRetryableIntegrationError(errText) {
+			return storage.ActionRun{}, fmt.Errorf("run_not_confirmable")
+		}
 	case "succeeded", "running":
 		return run, nil
 	default:
@@ -40,10 +49,11 @@ func (e *Executor) ConfirmAndExecute(ctx context.Context, userID, runID string) 
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if run.Status == "proposed" {
+	if run.Status == "proposed" || run.Status == "failed" {
 		run, err = e.Store.UpdateActionRun(ctx, userID, runID, map[string]any{
 			"status":       "confirmed",
 			"confirmed_at": now,
+			"error":        nil,
 		})
 		if err != nil {
 			return storage.ActionRun{}, err
@@ -175,6 +185,8 @@ func (e *Executor) runIntegration(ctx context.Context, userID string, name Built
 func isRetryableIntegrationError(errText string) bool {
 	return errText == "reauth_required" ||
 		errText == "timezone_required" ||
+		strings.HasPrefix(errText, "invalid_timezone:") ||
+		strings.HasPrefix(errText, "unparseable_when:") ||
 		strings.HasPrefix(errText, "needs_integration:") ||
 		strings.HasPrefix(errText, "google_api_not_enabled:")
 }
