@@ -164,6 +164,7 @@ func main() {
 				Store:               store,
 				Notes:               notesStore,
 				KB:                  kbStore,
+				Preferences:         preferencesStore,
 				IntegrationsEnabled: true,
 				GranolaEnabled:      cfg.GranolaEnabled,
 				GoogleEnabled:       googleEnabled,

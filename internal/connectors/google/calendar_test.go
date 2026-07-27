@@ -160,14 +160,22 @@ func TestResolveEventWindowParsesTimeRange(t *testing.T) {
 	}
 }
 
-func TestResolveEventWindowUnknownErrors(t *testing.T) {
-	loc := time.UTC
-	now := time.Date(2026, 7, 27, 12, 30, 0, 0, loc)
-	_, _, err := resolveEventWindow(map[string]any{
-		"when": "whenever works for the team",
+func TestResolveEventWindowUsesSummaryWhenWhenIsClockOnly(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 11, 30, 0, 0, loc)
+	start, _, err := resolveEventWindow(map[string]any{
+		"when":    "4pm",
+		"summary": "I need to meet Radhika on 28 July, 2026 on 4PM",
 	}, now, loc)
-	if err == nil || !strings.Contains(err.Error(), "unparseable_when") {
-		t.Fatalf("expected unparseable_when, got %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 7, 28, 16, 0, 0, 0, loc)
+	if !start.Equal(want) {
+		t.Fatalf("got %s want %s", start, want)
 	}
 }
 

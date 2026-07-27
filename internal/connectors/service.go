@@ -16,6 +16,7 @@ type Service struct {
 	Store               *Store
 	Notes               *storage.Notes
 	KB                  *storage.Knowledge
+	Preferences         *storage.Preferences
 	IntegrationsEnabled bool
 	GranolaEnabled      bool
 	GoogleEnabled       bool
@@ -236,6 +237,23 @@ func (s *Service) withGoogleAction(ctx context.Context, userID string) (googleAc
 
 // CreateCalendarEvent executes the Google Calendar write action for a user.
 func (s *Service) CreateCalendarEvent(ctx context.Context, userID string, input map[string]any) (map[string]any, error) {
+	if input == nil {
+		input = map[string]any{}
+	} else {
+		// Shallow copy so we can inject timezone without mutating the stored run input unexpectedly mid-flight.
+		cp := make(map[string]any, len(input)+1)
+		for k, v := range input {
+			cp[k] = v
+		}
+		input = cp
+	}
+	if tz, _ := input["timezone"].(string); strings.TrimSpace(tz) == "" {
+		if s.Preferences != nil {
+			if prefTZ, err := s.Preferences.GetTimezone(ctx, userID); err == nil && strings.TrimSpace(prefTZ) != "" {
+				input["timezone"] = strings.TrimSpace(prefTZ)
+			}
+		}
+	}
 	adapter, conn, err := s.withGoogleAction(ctx, userID)
 	if err != nil {
 		return nil, err

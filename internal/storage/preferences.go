@@ -21,15 +21,17 @@ type prefsCacheEntry struct {
 	model       string
 	persona     string
 	personaCust string
+	timezone    string
 	expiresAt   time.Time
 }
 
 const prefsCacheTTL = 60 * time.Second
 
 type PrefsRow struct {
-	LLMModel     string `json:"llm_model"`
-	Persona      string `json:"persona"`
-	PersonaCust  string `json:"persona_custom"`
+	LLMModel    string `json:"llm_model"`
+	Persona     string `json:"persona"`
+	PersonaCust string `json:"persona_custom"`
+	Timezone    string `json:"timezone"`
 }
 
 // GetChatPreferences returns the single preferences row used to configure a
@@ -50,13 +52,13 @@ func (p *Preferences) loadRow(ctx context.Context, userID string) (PrefsRow, err
 	if p.cache != nil {
 		if entry, ok := p.cache[userID]; ok && entry.expiresAt.After(now) {
 			p.mu.Unlock()
-			return PrefsRow{LLMModel: entry.model, Persona: entry.persona, PersonaCust: entry.personaCust}, nil
+			return PrefsRow{LLMModel: entry.model, Persona: entry.persona, PersonaCust: entry.personaCust, Timezone: entry.timezone}, nil
 		}
 	}
 	p.mu.Unlock()
 
 	q := url.Values{}
-	q.Set("select", "llm_model,persona,persona_custom")
+	q.Set("select", "llm_model,persona,persona_custom,timezone")
 	q.Set("user_id", "eq."+userID)
 
 	var rows []PrefsRow
@@ -76,6 +78,7 @@ func (p *Preferences) loadRow(ctx context.Context, userID string) (PrefsRow, err
 		model:       row.LLMModel,
 		persona:     row.Persona,
 		personaCust: row.PersonaCust,
+		timezone:    row.Timezone,
 		expiresAt:   now.Add(prefsCacheTTL),
 	}
 	p.mu.Unlock()
@@ -131,6 +134,37 @@ func (p *Preferences) SetPersona(ctx context.Context, userID, persona, personaCu
 		"persona":        persona,
 		"persona_custom": personaCustom,
 		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := p.DB.Upsert(ctx, "user_preferences", "user_id", body, nil); err != nil {
+		return err
+	}
+	p.invalidate(userID)
+	return nil
+}
+
+// GetTimezone returns the user's IANA timezone preference (e.g. Asia/Kolkata).
+func (p *Preferences) GetTimezone(ctx context.Context, userID string) (string, error) {
+	row, err := p.loadRow(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(row.Timezone), nil
+}
+
+func (p *Preferences) SetTimezone(ctx context.Context, userID, timezone string) error {
+	if p == nil || !p.Enabled || p.DB == nil {
+		return fmt.Errorf("preferences unavailable")
+	}
+	timezone = strings.TrimSpace(timezone)
+	if timezone != "" {
+		if _, err := time.LoadLocation(timezone); err != nil {
+			return fmt.Errorf("invalid_timezone")
+		}
+	}
+	body := map[string]any{
+		"user_id":    userID,
+		"timezone":   timezone,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := p.DB.Upsert(ctx, "user_preferences", "user_id", body, nil); err != nil {
 		return err

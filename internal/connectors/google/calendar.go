@@ -203,6 +203,12 @@ func resolveEventWindow(input map[string]any, now time.Time, loc *time.Location)
 	whenRaw := stringSlot(input, "when")
 	startRaw := stringSlot(input, "start")
 	raw := pickTimeExpression(whenRaw, startRaw)
+	// Heuristics/LLMs often leave when as bare "4pm" while summary has the real date.
+	if isClockOnly(raw) {
+		if richer := richerTimeFromText(stringSlot(input, "summary"), raw); richer != "" {
+			raw = richer
+		}
+	}
 
 	if raw != "" {
 		parsed, rangeEnd, ok := parseFlexibleTimeRange(raw, now, loc)
@@ -364,30 +370,54 @@ func parseSingleTime(raw string, now time.Time, loc *time.Location) (time.Time, 
 }
 
 func splitTimeRange(raw string) []string {
-	for _, sep := range []string{" - ", " – ", " — ", " to "} {
-		if strings.Contains(strings.ToLower(raw), strings.TrimSpace(sep)) || strings.Contains(raw, sep) {
-			parts := strings.SplitN(raw, sep, 2)
-			if len(parts) != 2 {
-				// try case-insensitive for " to "
-				idx := strings.Index(strings.ToLower(raw), " to ")
-				if idx > 0 {
-					return []string{strings.TrimSpace(raw[:idx]), strings.TrimSpace(raw[idx+4:])}
-				}
-				continue
-			}
+	for _, sep := range []string{" - ", " – ", " — "} {
+		if parts := strings.SplitN(raw, sep, 2); len(parts) == 2 {
 			left := strings.TrimSpace(parts[0])
 			right := strings.TrimSpace(parts[1])
-			if left != "" && right != "" {
+			if left != "" && right != "" && looksLikeEndClock(right) {
 				return []string{left, right}
 			}
+		}
+	}
+	lower := strings.ToLower(raw)
+	if idx := strings.Index(lower, " to "); idx > 0 {
+		left := strings.TrimSpace(raw[:idx])
+		right := strings.TrimSpace(raw[idx+4:])
+		if left != "" && right != "" && looksLikeEndClock(right) {
+			return []string{left, right}
 		}
 	}
 	return []string{raw}
 }
 
+func looksLikeEndClock(raw string) bool {
+	lower := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(raw))), " ")
+	if isClockOnly(lower) {
+		return true
+	}
+	// "2:00 PM", "14:00", "2pm"
+	return reAtClock.MatchString(lower) && !reMonthName.MatchString(lower) &&
+		!strings.Contains(lower, "tomorrow") && !strings.Contains(lower, "today")
+}
+
 func isClockOnly(raw string) bool {
 	lower := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(raw))), " ")
 	return reClockOnly.MatchString(lower)
+}
+
+// richerTimeFromText finds a dated time phrase in text when `when` is only a clock.
+func richerTimeFromText(text, clock string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if reMonthDayYear.MatchString(lower) || reDayMonthYear.MatchString(lower) || reMonthDay.MatchString(lower) ||
+		strings.Contains(lower, "tomorrow") || strings.Contains(lower, "today") || reWeekday.MatchString(lower) {
+		return text
+	}
+	_ = clock
+	return ""
 }
 
 var (

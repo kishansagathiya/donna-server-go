@@ -235,7 +235,7 @@ func firstURL(content string) string {
 
 var (
 	emailRe = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
-	whenRe  = regexp.MustCompile(`(?i)\b(?:(?:day after )?tomorrow|today|tonight|next\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|in\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|days?)|(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)|(?:this\s+)?(?:morning|afternoon|evening))\b`)
+	whenRe  = regexp.MustCompile(`(?i)\b(?:(?:day after )?tomorrow|today|tonight|next\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|in\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|days?)|(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)|(?:this\s+)?(?:morning|afternoon|evening)|(?:\d{1,2}(?:st|nd|rd|th)?\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s+\d{4})?)\b`)
 )
 
 func extractEmails(content string) string {
@@ -257,11 +257,22 @@ func extractEmails(content string) string {
 }
 
 func extractWhenHint(content string) string {
+	// Prefer the full note/summary when it clearly contains a dated meeting time.
+	lower := strings.ToLower(strings.Join(strings.Fields(content), " "))
+	if (strings.Contains(lower, "am") || strings.Contains(lower, "pm") || strings.Contains(lower, "tomorrow") || strings.Contains(lower, "today")) &&
+		(strings.Contains(lower, "july") || strings.Contains(lower, "january") || strings.Contains(lower, "february") ||
+			strings.Contains(lower, "march") || strings.Contains(lower, "april") || strings.Contains(lower, "may") ||
+			strings.Contains(lower, "june") || strings.Contains(lower, "august") || strings.Contains(lower, "september") ||
+			strings.Contains(lower, "october") || strings.Contains(lower, "november") || strings.Contains(lower, "december") ||
+			strings.Contains(lower, "tomorrow") || strings.Contains(lower, "today") || strings.Contains(lower, "monday") ||
+			strings.Contains(lower, "tuesday") || strings.Contains(lower, "wednesday") || strings.Contains(lower, "thursday") ||
+			strings.Contains(lower, "friday") || strings.Contains(lower, "saturday") || strings.Contains(lower, "sunday")) {
+		return strings.TrimSpace(content)
+	}
 	matches := whenRe.FindAllString(content, -1)
 	if len(matches) == 0 {
 		return ""
 	}
-	// Keep order and join distinct fragments into a compact when phrase.
 	parts := make([]string, 0, len(matches))
 	seen := map[string]bool{}
 	for _, m := range matches {
