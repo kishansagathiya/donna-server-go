@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
@@ -191,10 +192,17 @@ func heuristicExtract(content string) []ExtractedIntent {
 			})
 		}
 	case strings.Contains(lower, "schedule") || strings.Contains(lower, "meeting") || strings.Contains(lower, "appointment"):
+		slots := map[string]string{"title": truncate(scheduleTitle(content), 80)}
+		if when := extractWhenHint(content); when != "" {
+			slots["when"] = when
+		}
+		if attendees := extractEmails(content); attendees != "" {
+			slots["attendees"] = attendees
+		}
 		out = append(out, ExtractedIntent{
 			Kind:    "schedule",
 			Summary: truncate(content, 160),
-			Slots:   map[string]string{"title": truncate(content, 80)},
+			Slots:   slots,
 		})
 	case strings.Contains(lower, "message ") || strings.Contains(lower, "email ") || strings.Contains(lower, "draft "):
 		out = append(out, ExtractedIntent{
@@ -223,6 +231,68 @@ func firstURL(content string) string {
 		return strings.TrimRight(rest[:end], ".,;:")
 	}
 	return ""
+}
+
+var (
+	emailRe = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
+	whenRe  = regexp.MustCompile(`(?i)\b(?:(?:day after )?tomorrow|today|tonight|next\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|in\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|days?)|(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)|(?:this\s+)?(?:morning|afternoon|evening))\b`)
+)
+
+func extractEmails(content string) string {
+	matches := emailRe.FindAllString(content, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		email := strings.ToLower(strings.TrimSpace(m))
+		if seen[email] {
+			continue
+		}
+		seen[email] = true
+		out = append(out, email)
+	}
+	return strings.Join(out, ", ")
+}
+
+func extractWhenHint(content string) string {
+	matches := whenRe.FindAllString(content, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	// Keep order and join distinct fragments into a compact when phrase.
+	parts := make([]string, 0, len(matches))
+	seen := map[string]bool{}
+	for _, m := range matches {
+		p := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(m))), " ")
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, " ")
+}
+
+func scheduleTitle(content string) string {
+	s := strings.TrimSpace(content)
+	lower := strings.ToLower(s)
+	for _, prefix := range []string{
+		"schedule a meeting ",
+		"schedule meeting ",
+		"schedule a call ",
+		"schedule an appointment ",
+		"set up a meeting ",
+		"book a meeting ",
+		"meeting with ",
+		"meet with ",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(s[len(prefix):])
+		}
+	}
+	return s
 }
 
 func truncate(s string, n int) string {

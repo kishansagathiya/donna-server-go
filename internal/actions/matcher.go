@@ -102,6 +102,21 @@ func buildRunInput(intent storage.Intent, actionSlug string) map[string]any {
 	if _, ok := out["body"]; !ok && (actionSlug == "draft_message" || actionSlug == "send_email") {
 		out["body"] = intent.Summary
 	}
+	if actionSlug == "create_calendar_event" {
+		if _, ok := out["attendees"]; !ok {
+			for _, key := range []string{"guests", "invitees", "recipient", "to"} {
+				if v, ok := out[key]; ok {
+					out["attendees"] = v
+					break
+				}
+			}
+		}
+		if _, ok := out["when"]; !ok {
+			if start, ok := out["start"]; ok {
+				out["when"] = start
+			}
+		}
+	}
 	if actionSlug == "send_email" {
 		if _, ok := out["to"]; !ok {
 			if recipient, ok := out["recipient"]; ok {

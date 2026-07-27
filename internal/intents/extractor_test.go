@@ -2,7 +2,9 @@ package intents
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestHeuristicExtractRemind(t *testing.T) {
@@ -26,6 +28,27 @@ func TestHeuristicExtractURL(t *testing.T) {
 	}
 	if out[0].Slots["url"] != "https://example.com/docs" {
 		t.Fatalf("unexpected slots: %#v", out[0].Slots)
+	}
+}
+
+func TestHeuristicExtractScheduleWithWhenAndAttendees(t *testing.T) {
+	out := heuristicExtract("Schedule a meeting with alex@example.com tomorrow at 3pm")
+	if len(out) != 1 || out[0].Kind != "schedule" {
+		t.Fatalf("expected schedule intent, got %#v", out)
+	}
+	if out[0].Slots["attendees"] != "alex@example.com" {
+		t.Fatalf("attendees: %#v", out[0].Slots)
+	}
+	if out[0].Slots["when"] == "" {
+		t.Fatalf("expected when slot, got %#v", out[0].Slots)
+	}
+}
+
+func TestBuildExtractorUserMessageIncludesCurrentTime(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	msg := BuildExtractorUserMessageAt("note", "Inbox", "Schedule lunch tomorrow", now)
+	if !strings.Contains(msg, "current_time_utc: 2026-07-27T12:00:00Z") {
+		t.Fatalf("missing current time context: %s", msg)
 	}
 }
 
