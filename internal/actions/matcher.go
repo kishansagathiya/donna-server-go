@@ -29,8 +29,9 @@ var kindToActionSlug = map[string]string{
 }
 
 type Matcher struct {
-	Store    *storage.ActionsStore
-	Executor *Executor
+	Store       *storage.ActionsStore
+	Executor    *Executor
+	Preferences *storage.Preferences
 	// AutoInternal, when true, auto-confirms and executes risk=internal builtins.
 	AutoInternal bool
 }
@@ -64,6 +65,13 @@ func (m *Matcher) MatchIntent(ctx context.Context, userID string, intent storage
 	}
 
 	input := buildRunInput(intent, action.Slug)
+	if action.Slug == "create_calendar_event" && m.Preferences != nil {
+		if tz, err := m.Preferences.GetTimezone(ctx, userID); err == nil {
+			if tz = strings.TrimSpace(tz); tz != "" {
+				input["timezone"] = tz
+			}
+		}
+	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return err

@@ -258,6 +258,12 @@ func TestCreateEventSendsInvitesAndUsesTimezone(t *testing.T) {
 	if payload.Start.TimeZone != locName {
 		t.Fatalf("timezone: %q", payload.Start.TimeZone)
 	}
+	if payload.Start.DateTime != "2026-07-28T16:00:00" {
+		t.Fatalf("expected floating local datetime, got %q", payload.Start.DateTime)
+	}
+	if strings.Contains(payload.Start.DateTime, "Z") || strings.Contains(payload.Start.DateTime, "+") {
+		t.Fatalf("dateTime should not include offset: %q", payload.Start.DateTime)
+	}
 	if len(payload.Attendees) != 1 || payload.Attendees[0].Email != "alex@example.com" {
 		t.Fatalf("attendees: %#v", payload.Attendees)
 	}

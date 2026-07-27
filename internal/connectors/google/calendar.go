@@ -55,13 +55,23 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 	}
 
 	tzName := firstNonEmpty(stringSlot(input, "timezone"), stringSlot(input, "time_zone"))
+	if tzName == "" || isUTCName(tzName) {
+		// Google accounts often report UTC even when the user means local wall-clock time.
+		// Prefer an explicit Donna timezone; never silently schedule "4pm" in UTC.
+		resolved := a.resolveCalendarTimezone(ctx, client, accessToken)
+		if !isUTCName(resolved) {
+			tzName = resolved
+		}
+	}
+	if isUTCName(tzName) {
+		tzName = ""
+	}
 	if tzName == "" {
-		tzName = a.resolveCalendarTimezone(ctx, client, accessToken)
+		return nil, fmt.Errorf("timezone_required")
 	}
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
-		loc = time.UTC
-		tzName = "UTC"
+		return nil, fmt.Errorf("invalid_timezone:%s", tzName)
 	}
 
 	start, end, err := resolveEventWindow(input, time.Now().In(loc), loc)
@@ -78,16 +88,18 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 	}
 
 	attendees := parseAttendees(input)
+	// Send floating local dateTimes with timeZone so Google treats 16:00 as
+	// 4pm in that zone (not 4pm UTC shown as 9:30pm IST).
 	reqBody := calendarEventRequest{
 		Summary:     title,
 		Description: strings.Join(descParts, "\n\n"),
 		Location:    stringSlot(input, "location"),
 		Start: calendarEventDateTime{
-			DateTime: start.In(loc).Format(time.RFC3339),
+			DateTime: start.In(loc).Format("2006-01-02T15:04:05"),
 			TimeZone: tzName,
 		},
 		End: calendarEventDateTime{
-			DateTime: end.In(loc).Format(time.RFC3339),
+			DateTime: end.In(loc).Format("2006-01-02T15:04:05"),
 			TimeZone: tzName,
 		},
 		Attendees: attendees,
@@ -147,20 +159,18 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 func (a *Adapter) resolveCalendarTimezone(ctx context.Context, client *http.Client, accessToken string) string {
 	settingTZ, _ := a.fetchSettingTimezone(ctx, client, accessToken)
 	primaryTZ, _ := a.fetchPrimaryTimezone(ctx, client, accessToken)
-	// Prefer the user's Calendar setting when primary is missing/UTC.
 	for _, tz := range []string{settingTZ, primaryTZ} {
 		tz = strings.TrimSpace(tz)
-		if tz != "" && !strings.EqualFold(tz, "UTC") {
+		if tz != "" && !isUTCName(tz) {
 			return tz
 		}
 	}
-	if settingTZ != "" {
-		return settingTZ
-	}
-	if primaryTZ != "" {
-		return primaryTZ
-	}
-	return "UTC"
+	return ""
+}
+
+func isUTCName(tz string) bool {
+	tz = strings.TrimSpace(tz)
+	return tz == "" || strings.EqualFold(tz, "UTC") || strings.EqualFold(tz, "Etc/UTC") || strings.EqualFold(tz, "Etc/GMT")
 }
 
 func (a *Adapter) fetchPrimaryTimezone(ctx context.Context, client *http.Client, accessToken string) (string, error) {

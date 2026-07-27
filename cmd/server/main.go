@@ -96,7 +96,7 @@ func main() {
 	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
 
 	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}}
-	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, AutoInternal: false}
+	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false}
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
 
