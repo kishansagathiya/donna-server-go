@@ -18,8 +18,8 @@ Rules:
 
 For schedule intents:
 - Always include title (short meeting name).
-- Prefer start as RFC3339 with numeric offset when the time can be resolved from Context (example: 2026-07-28T15:00:00-07:00).
-- If you cannot resolve an absolute time, put the user's phrasing in when (example: "tomorrow at 3pm").
+- Put the user's requested time in when using clear phrasing (prefer "tomorrow 4pm" or "July 28, 2026 at 4PM").
+- Only set start/end as RFC3339 with a numeric offset when you are certain of the absolute instant (example: 2026-07-28T16:00:00+05:30). Do not invent zone-less ISO timestamps.
 - Include end when a duration or end time is stated; otherwise omit end (default 1 hour).
 - Include attendees as a comma-separated list of email addresses whenever emails are present.
 - Include location when stated.

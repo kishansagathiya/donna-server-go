@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,15 +14,12 @@ import (
 func TestResolveEventWindowParsesRFC3339(t *testing.T) {
 	loc := time.UTC
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, loc)
-	start, end, note, err := resolveEventWindow(map[string]any{
+	start, end, err := resolveEventWindow(map[string]any{
 		"start": "2026-08-01T15:00:00Z",
 		"end":   "2026-08-01T16:30:00Z",
 	}, now, loc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if note != "" {
-		t.Fatalf("unexpected note: %q", note)
 	}
 	if !start.Equal(time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC)) {
 		t.Fatalf("start: %s", start)
@@ -37,14 +35,11 @@ func TestResolveEventWindowParsesZonelessInLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, loc)
-	start, end, note, err := resolveEventWindow(map[string]any{
+	start, end, err := resolveEventWindow(map[string]any{
 		"when": "2026-08-01 15:00",
 	}, now, loc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if note != "" {
-		t.Fatalf("unexpected note: %q", note)
 	}
 	want := time.Date(2026, 8, 1, 15, 0, 0, 0, loc)
 	if !start.Equal(want) {
@@ -61,14 +56,11 @@ func TestResolveEventWindowParsesTomorrowAfternoon(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, loc) // Monday
-	start, _, note, err := resolveEventWindow(map[string]any{
+	start, _, err := resolveEventWindow(map[string]any{
 		"when": "tomorrow afternoon",
 	}, now, loc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if note != "" {
-		t.Fatalf("unexpected note: %q", note)
 	}
 	want := time.Date(2026, 7, 28, 15, 0, 0, 0, loc)
 	if !start.Equal(want) {
@@ -82,14 +74,11 @@ func TestResolveEventWindowParsesTomorrowAt3PM(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 27, 9, 0, 0, 0, loc)
-	start, _, note, err := resolveEventWindow(map[string]any{
+	start, _, err := resolveEventWindow(map[string]any{
 		"when": "tomorrow at 3pm",
 	}, now, loc)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if note != "" {
-		t.Fatalf("unexpected note: %q", note)
 	}
 	want := time.Date(2026, 7, 28, 15, 0, 0, 0, loc)
 	if !start.Equal(want) {
@@ -97,20 +86,88 @@ func TestResolveEventWindowParsesTomorrowAt3PM(t *testing.T) {
 	}
 }
 
-func TestResolveEventWindowUnknownKeepsNote(t *testing.T) {
-	loc := time.UTC
-	now := time.Date(2026, 7, 27, 12, 30, 0, 0, loc)
-	start, end, note, err := resolveEventWindow(map[string]any{
-		"when": "whenever works for the team",
+func TestResolveEventWindowParsesJuly28At4PM(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 11, 23, 0, 0, loc)
+	start, _, err := resolveEventWindow(map[string]any{
+		"when": "July 28, 2026 at 4PM",
 	}, now, loc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if note != "whenever works for the team" {
-		t.Fatalf("note: %q", note)
+	want := time.Date(2026, 7, 28, 16, 0, 0, 0, loc)
+	if !start.Equal(want) {
+		t.Fatalf("start: got %s want %s", start, want)
 	}
-	if !end.After(start) {
-		t.Fatalf("end should be after start: %s %s", start, end)
+}
+
+func TestResolveEventWindowParsesTomorrow4PM(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 11, 23, 0, 0, loc)
+	start, _, err := resolveEventWindow(map[string]any{
+		"when": "tomorrow 4pm",
+	}, now, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 7, 28, 16, 0, 0, 0, loc)
+	if !start.Equal(want) {
+		t.Fatalf("start: got %s want %s", start, want)
+	}
+}
+
+func TestResolveEventWindowPrefersWhenOverBadStart(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 11, 23, 0, 0, loc)
+	start, _, err := resolveEventWindow(map[string]any{
+		"start": "2026-07-27T14:00:00Z",
+		"when":  "tomorrow 4pm",
+	}, now, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 7, 28, 16, 0, 0, 0, loc)
+	if !start.Equal(want) {
+		t.Fatalf("got %s want %s (should prefer relative when)", start, want)
+	}
+}
+
+func TestResolveEventWindowParsesTimeRange(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 27, 11, 0, 0, 0, loc)
+	start, end, err := resolveEventWindow(map[string]any{
+		"when": "tomorrow 1:00 PM - 2:00 PM",
+	}, now, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStart := time.Date(2026, 7, 28, 13, 0, 0, 0, loc)
+	wantEnd := time.Date(2026, 7, 28, 14, 0, 0, 0, loc)
+	if !start.Equal(wantStart) || !end.Equal(wantEnd) {
+		t.Fatalf("got %s-%s want %s-%s", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestResolveEventWindowUnknownErrors(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 7, 27, 12, 30, 0, 0, loc)
+	_, _, err := resolveEventWindow(map[string]any{
+		"when": "whenever works for the team",
+	}, now, loc)
+	if err == nil || !strings.Contains(err.Error(), "unparseable_when") {
+		t.Fatalf("expected unparseable_when, got %v", err)
 	}
 }
 
@@ -135,14 +192,21 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestCreateEventSendsInvitesAndUsesTimezone(t *testing.T) {
-	locName := "America/Los_Angeles"
+	locName := "Asia/Kolkata"
 	var createReq *http.Request
 	var createBody []byte
 
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/users/me/settings/timezone"):
+			body := `{"id":"timezone","value":"Asia/Kolkata"}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(bytes.NewBufferString(body)),
+				Header:     make(http.Header),
+			}, nil
 		case r.Method == http.MethodGet && r.URL.Path == "/calendar/v3/calendars/primary":
-			body := `{"timeZone":"America/Los_Angeles"}`
+			body := `{"timeZone":"UTC"}`
 			return &http.Response{
 				StatusCode: 200,
 				Body:       io.NopCloser(bytes.NewBufferString(body)),
@@ -167,7 +231,7 @@ func TestCreateEventSendsInvitesAndUsesTimezone(t *testing.T) {
 	a := &Adapter{HTTPClient: client}
 	out, err := a.createEvent(context.Background(), "token", map[string]any{
 		"title":     "Sync with Alex",
-		"when":      "tomorrow at 3pm",
+		"when":      "July 28, 2026 at 4PM",
 		"attendees": "alex@example.com",
 	})
 	if err != nil {
@@ -200,7 +264,7 @@ func TestCreateEventSendsInvitesAndUsesTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Hour() != 15 {
-		t.Fatalf("expected 3pm local, got %s", start)
+	if parsed.Day() != 28 || parsed.Hour() != 16 {
+		t.Fatalf("expected July 28 4pm local, got %s", start)
 	}
 }

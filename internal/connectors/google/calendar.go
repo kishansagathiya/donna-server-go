@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	calendarEventsURL   = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-	calendarPrimaryURL  = "https://www.googleapis.com/calendar/v3/calendars/primary"
-	defaultEventHour    = 9
-	defaultEventMinutes = 0
+	calendarEventsURL      = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+	calendarPrimaryURL     = "https://www.googleapis.com/calendar/v3/calendars/primary"
+	calendarTimezoneURL    = "https://www.googleapis.com/calendar/v3/users/me/settings/timezone"
+	defaultEventHour       = 9
+	defaultEventMinutes    = 0
 )
 
 type calendarEventRequest struct {
@@ -55,11 +56,7 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 
 	tzName := firstNonEmpty(stringSlot(input, "timezone"), stringSlot(input, "time_zone"))
 	if tzName == "" {
-		if fetched, err := a.fetchPrimaryTimezone(ctx, client, accessToken); err == nil && fetched != "" {
-			tzName = fetched
-		} else {
-			tzName = "UTC"
-		}
+		tzName = a.resolveCalendarTimezone(ctx, client, accessToken)
 	}
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
@@ -67,20 +64,17 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 		tzName = "UTC"
 	}
 
-	start, end, whenNote, err := resolveEventWindow(input, time.Now().In(loc), loc)
+	start, end, err := resolveEventWindow(input, time.Now().In(loc), loc)
 	if err != nil {
 		return nil, err
 	}
 
-	descParts := make([]string, 0, 3)
+	descParts := make([]string, 0, 2)
 	if notes := stringSlot(input, "notes"); notes != "" {
 		descParts = append(descParts, notes)
 	}
 	if description := stringSlot(input, "description"); description != "" {
 		descParts = append(descParts, description)
-	}
-	if whenNote != "" {
-		descParts = append(descParts, "Original when: "+whenNote)
 	}
 
 	attendees := parseAttendees(input)
@@ -150,8 +144,35 @@ func (a *Adapter) createEvent(ctx context.Context, accessToken string, input map
 	}, nil
 }
 
+func (a *Adapter) resolveCalendarTimezone(ctx context.Context, client *http.Client, accessToken string) string {
+	settingTZ, _ := a.fetchSettingTimezone(ctx, client, accessToken)
+	primaryTZ, _ := a.fetchPrimaryTimezone(ctx, client, accessToken)
+	// Prefer the user's Calendar setting when primary is missing/UTC.
+	for _, tz := range []string{settingTZ, primaryTZ} {
+		tz = strings.TrimSpace(tz)
+		if tz != "" && !strings.EqualFold(tz, "UTC") {
+			return tz
+		}
+	}
+	if settingTZ != "" {
+		return settingTZ
+	}
+	if primaryTZ != "" {
+		return primaryTZ
+	}
+	return "UTC"
+}
+
 func (a *Adapter) fetchPrimaryTimezone(ctx context.Context, client *http.Client, accessToken string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, calendarPrimaryURL, nil)
+	return a.fetchTimezoneJSON(ctx, client, accessToken, calendarPrimaryURL, "timeZone")
+}
+
+func (a *Adapter) fetchSettingTimezone(ctx context.Context, client *http.Client, accessToken string) (string, error) {
+	return a.fetchTimezoneJSON(ctx, client, accessToken, calendarTimezoneURL, "value")
+}
+
+func (a *Adapter) fetchTimezoneJSON(ctx context.Context, client *http.Client, accessToken, endpoint, field string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
@@ -165,63 +186,142 @@ func (a *Adapter) fetchPrimaryTimezone(ctx context.Context, client *http.Client,
 	if res.StatusCode >= 300 {
 		return "", mapGoogleAPIError("calendar_timezone", res.StatusCode, body)
 	}
-	var cal struct {
-		TimeZone string `json:"timeZone"`
-	}
-	if err := json.Unmarshal(body, &cal); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(cal.TimeZone), nil
+	v, _ := raw[field].(string)
+	return strings.TrimSpace(v), nil
 }
 
-func resolveEventWindow(input map[string]any, now time.Time, loc *time.Location) (start time.Time, end time.Time, whenNote string, err error) {
+func resolveEventWindow(input map[string]any, now time.Time, loc *time.Location) (start time.Time, end time.Time, err error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	now = now.In(loc)
 
-	if raw := firstNonEmpty(stringSlot(input, "start"), stringSlot(input, "when")); raw != "" {
-		if parsed, ok := parseFlexibleTime(raw, now, loc); ok {
-			start = parsed
-		} else {
-			whenNote = raw
-			start = nextHour(now)
+	whenRaw := stringSlot(input, "when")
+	startRaw := stringSlot(input, "start")
+	raw := pickTimeExpression(whenRaw, startRaw)
+
+	if raw != "" {
+		parsed, rangeEnd, ok := parseFlexibleTimeRange(raw, now, loc)
+		if !ok {
+			return time.Time{}, time.Time{}, fmt.Errorf("unparseable_when:%s", raw)
+		}
+		start = parsed
+		if !rangeEnd.IsZero() {
+			end = rangeEnd
 		}
 	} else {
-		start = nextHour(now)
+		start = nextLocalHour(now)
 	}
 
-	if rawEnd := stringSlot(input, "end"); rawEnd != "" {
-		if parsed, ok := parseFlexibleTime(rawEnd, now, loc); ok && parsed.After(start) {
-			end = parsed
+	if end.IsZero() {
+		if rawEnd := stringSlot(input, "end"); rawEnd != "" {
+			if parsed, ok := parseFlexibleTime(rawEnd, now, loc); ok && parsed.After(start) {
+				end = parsed
+			} else {
+				end = start.Add(time.Hour)
+			}
+		} else if dur := stringSlot(input, "duration"); dur != "" {
+			if d, ok := parseDurationHint(dur); ok {
+				end = start.Add(d)
+			} else {
+				end = start.Add(time.Hour)
+			}
 		} else {
 			end = start.Add(time.Hour)
 		}
-	} else if dur := stringSlot(input, "duration"); dur != "" {
-		if d, ok := parseDurationHint(dur); ok {
-			end = start.Add(d)
-		} else {
-			end = start.Add(time.Hour)
-		}
-	} else {
-		end = start.Add(time.Hour)
 	}
-	return start, end, whenNote, nil
+	return start, end, nil
 }
 
-func nextHour(now time.Time) time.Time {
-	return now.Truncate(time.Hour).Add(time.Hour)
+// pickTimeExpression prefers natural-language `when` over absolute `start`
+// so a wrong LLM ISO timestamp cannot override "tomorrow 4pm".
+func pickTimeExpression(whenRaw, startRaw string) string {
+	whenRaw = strings.TrimSpace(whenRaw)
+	startRaw = strings.TrimSpace(startRaw)
+	if whenRaw == "" {
+		return startRaw
+	}
+	if startRaw == "" {
+		return whenRaw
+	}
+	if looksNaturalWhen(whenRaw) {
+		return whenRaw
+	}
+	return firstNonEmpty(startRaw, whenRaw)
+}
+
+func looksNaturalWhen(raw string) bool {
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "tomorrow") || strings.Contains(lower, "today") ||
+		strings.Contains(lower, "tonight") || strings.Contains(lower, "next ") ||
+		strings.Contains(lower, "morning") || strings.Contains(lower, "afternoon") ||
+		strings.Contains(lower, "evening") {
+		return true
+	}
+	if reMonthName.MatchString(lower) {
+		return true
+	}
+	if reWeekday.MatchString(lower) {
+		return true
+	}
+	if strings.Contains(lower, "am") || strings.Contains(lower, "pm") {
+		return true
+	}
+	return false
+}
+
+func nextLocalHour(now time.Time) time.Time {
+	loc := now.Location()
+	truncated := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc)
+	return truncated.Add(time.Hour)
 }
 
 func parseFlexibleTime(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
+	start, _, ok := parseFlexibleTimeRange(raw, now, loc)
+	return start, ok
+}
+
+func parseFlexibleTimeRange(raw string, now time.Time, loc *time.Location) (start time.Time, end time.Time, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, time.Time{}, false
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	now = now.In(loc)
+
+	// Split ranges like "tomorrow 1:00 PM - 2:00 PM".
+	rangeParts := splitTimeRange(raw)
+	primary := rangeParts[0]
+
+	if t, parsed := parseSingleTime(primary, now, loc); parsed {
+		start = t
+		if len(rangeParts) > 1 {
+			if endParsed, endOK := parseSingleTime(rangeParts[1], now, loc); endOK {
+				// If end is clock-only, pin it to start's day.
+				if !looksNaturalWhen(rangeParts[1]) || isClockOnly(rangeParts[1]) {
+					endParsed = time.Date(start.Year(), start.Month(), start.Day(), endParsed.Hour(), endParsed.Minute(), 0, 0, loc)
+				}
+				if endParsed.After(start) {
+					end = endParsed
+				}
+			}
+		}
+		return start, end, true
+	}
+	return time.Time{}, time.Time{}, false
+}
+
+func parseSingleTime(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, false
 	}
-	if loc == nil {
-		loc = time.UTC
-	}
-	now = now.In(loc)
 
 	// Absolute formats with zone/offset first.
 	absoluteLayouts := []string{
@@ -254,17 +354,139 @@ func parseFlexibleTime(raw string, now time.Time, loc *time.Location) (time.Time
 		}
 	}
 
+	if t, ok := parseEnglishDateTime(raw, now, loc); ok {
+		return t, true
+	}
 	if t, ok := parseRelativeTime(raw, now, loc); ok {
 		return t, true
 	}
 	return time.Time{}, false
 }
 
+func splitTimeRange(raw string) []string {
+	for _, sep := range []string{" - ", " – ", " — ", " to "} {
+		if strings.Contains(strings.ToLower(raw), strings.TrimSpace(sep)) || strings.Contains(raw, sep) {
+			parts := strings.SplitN(raw, sep, 2)
+			if len(parts) != 2 {
+				// try case-insensitive for " to "
+				idx := strings.Index(strings.ToLower(raw), " to ")
+				if idx > 0 {
+					return []string{strings.TrimSpace(raw[:idx]), strings.TrimSpace(raw[idx+4:])}
+				}
+				continue
+			}
+			left := strings.TrimSpace(parts[0])
+			right := strings.TrimSpace(parts[1])
+			if left != "" && right != "" {
+				return []string{left, right}
+			}
+		}
+	}
+	return []string{raw}
+}
+
+func isClockOnly(raw string) bool {
+	lower := strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(raw))), " ")
+	return reClockOnly.MatchString(lower)
+}
+
 var (
 	reInDuration = regexp.MustCompile(`(?i)^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)$`)
-	reAtClock    = regexp.MustCompile(`(?i)\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
+	reAtClock    = regexp.MustCompile(`(?i)(?:\bat\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\b|(?i)\b(\d{1,2}):(\d{2})\b`)
+	reClockOnly  = regexp.MustCompile(`(?i)^(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$`)
 	reWeekday    = regexp.MustCompile(`(?i)\b(next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b`)
+	reMonthName  = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b`)
+	reMonthDayYear = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b`)
+	reDayMonthYear = regexp.MustCompile(`(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)(?:,)?\s+(\d{4})\b`)
+	reMonthDay     = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\b`)
 )
+
+func parseEnglishDateTime(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	lower = strings.Join(strings.Fields(lower), " ")
+	if lower == "" {
+		return time.Time{}, false
+	}
+
+	var year, day int
+	var month time.Month
+	foundDate := false
+
+	if m := reMonthDayYear.FindStringSubmatch(lower); len(m) == 4 {
+		month = monthFromName(m[1])
+		day, _ = strconv.Atoi(m[2])
+		year, _ = strconv.Atoi(m[3])
+		foundDate = month > 0 && day >= 1 && day <= 31 && year >= 1970
+	} else if m := reDayMonthYear.FindStringSubmatch(lower); len(m) == 4 {
+		day, _ = strconv.Atoi(m[1])
+		month = monthFromName(m[2])
+		year, _ = strconv.Atoi(m[3])
+		foundDate = month > 0 && day >= 1 && day <= 31 && year >= 1970
+	} else if m := reMonthDay.FindStringSubmatch(lower); len(m) == 3 {
+		month = monthFromName(m[1])
+		day, _ = strconv.Atoi(m[2])
+		year = now.Year()
+		foundDate = month > 0 && day >= 1 && day <= 31
+		candidate := time.Date(year, month, day, 0, 0, 0, 0, loc)
+		if candidate.Before(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)) {
+			year++
+		}
+	}
+	if !foundDate {
+		return time.Time{}, false
+	}
+
+	hour, minute, hasTime, ok := extractClock(lower)
+	if !ok {
+		return time.Time{}, false
+	}
+	if !hasTime {
+		switch {
+		case strings.Contains(lower, "evening") || strings.Contains(lower, "tonight"):
+			hour, minute = 18, 0
+		case strings.Contains(lower, "afternoon"):
+			hour, minute = 15, 0
+		case strings.Contains(lower, "morning"):
+			hour, minute = 9, 0
+		case strings.Contains(lower, "noon"):
+			hour, minute = 12, 0
+		default:
+			hour, minute = defaultEventHour, defaultEventMinutes
+		}
+	}
+	return time.Date(year, month, day, hour, minute, 0, 0, loc), true
+}
+
+func monthFromName(name string) time.Month {
+	switch strings.ToLower(name) {
+	case "january", "jan":
+		return time.January
+	case "february", "feb":
+		return time.February
+	case "march", "mar":
+		return time.March
+	case "april", "apr":
+		return time.April
+	case "may":
+		return time.May
+	case "june", "jun":
+		return time.June
+	case "july", "jul":
+		return time.July
+	case "august", "aug":
+		return time.August
+	case "september", "sep", "sept":
+		return time.September
+	case "october", "oct":
+		return time.October
+	case "november", "nov":
+		return time.November
+	case "december", "dec":
+		return time.December
+	default:
+		return 0
+	}
+}
 
 func parseRelativeTime(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
 	lower := strings.ToLower(strings.TrimSpace(raw))
@@ -346,40 +568,63 @@ func parseRelativeTime(raw string, now time.Time, loc *time.Location) (time.Time
 }
 
 func extractClock(lower string) (hour, minute int, found, ok bool) {
-	m := reAtClock.FindStringSubmatch(lower)
-	if len(m) == 0 {
+	matches := reAtClock.FindAllStringSubmatch(lower, -1)
+	if len(matches) == 0 {
 		return 0, 0, false, true
 	}
-	h, err := strconv.Atoi(m[1])
-	if err != nil {
-		return 0, 0, false, false
-	}
-	min := 0
-	if m[2] != "" {
-		min, err = strconv.Atoi(m[2])
-		if err != nil || min > 59 {
-			return 0, 0, false, false
+	// Prefer matches that include am/pm, then "at HH", then HH:MM.
+	bestScore := -1
+	var bestH, bestM int
+	for _, m := range matches {
+		hStr, mStr, ampm := "", "", ""
+		score := 0
+		switch {
+		case m[1] != "": // HH[:MM] am/pm
+			hStr, mStr, ampm = m[1], m[2], m[3]
+			score = 3
+		case m[4] != "": // at HH[:MM]
+			hStr, mStr = m[4], m[5]
+			score = 2
+		case m[6] != "": // HH:MM
+			hStr, mStr = m[6], m[7]
+			score = 1
+		default:
+			continue
+		}
+		h, err := strconv.Atoi(hStr)
+		if err != nil {
+			continue
+		}
+		min := 0
+		if mStr != "" {
+			min, err = strconv.Atoi(mStr)
+			if err != nil || min > 59 {
+				continue
+			}
+		}
+		ampm = strings.ToLower(ampm)
+		if ampm != "" {
+			if h < 1 || h > 12 {
+				continue
+			}
+			if ampm == "pm" && h != 12 {
+				h += 12
+			}
+			if ampm == "am" && h == 12 {
+				h = 0
+			}
+		} else if h > 23 {
+			continue
+		}
+		if score >= bestScore {
+			bestScore = score
+			bestH, bestM = h, min
 		}
 	}
-	ampm := strings.ToLower(m[3])
-	if ampm == "" {
-		// 24h-style or bare hour without am/pm: treat 0-23 as-is when > 12,
-		// otherwise leave as wall-clock hour (ambiguous 1-12 kept as-is).
-		if h > 23 {
-			return 0, 0, false, false
-		}
-		return h, min, true, true
+	if bestScore < 0 {
+		return 0, 0, false, true
 	}
-	if h < 1 || h > 12 {
-		return 0, 0, false, false
-	}
-	if ampm == "pm" && h != 12 {
-		h += 12
-	}
-	if ampm == "am" && h == 12 {
-		h = 0
-	}
-	return h, min, true, true
+	return bestH, bestM, true, true
 }
 
 func weekdayFromName(name string) int {
