@@ -37,6 +37,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
+	ttspkg "github.com/kishansagathiya/donna/donna-server-go/internal/tts"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/voice"
 )
 
@@ -309,6 +310,13 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/chat", chatHandler.ServeHTTP)
 
+	ttsProvider := providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey)
+	ttsHandler := &ttspkg.Handler{TTS: ttsProvider}
+	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
+		RequireAuth: cfg.RequireAuth,
+		Auth:        authCfg,
+	})).Post("/tts", ttsHandler.ServeHTTP)
+
 	conversationsHandler := &conversations.Handler{Store: convStore}
 	conversations.RegisterRoutes(r, authMiddleware, conversationsHandler)
 
@@ -355,6 +363,7 @@ func main() {
 	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD /memory/facts, review /memory/items|suggestions|feedback", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
+	log.Print("tts: POST /tts (synthesize assistant reply audio)", nil)
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
