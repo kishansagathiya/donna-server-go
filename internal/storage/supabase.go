@@ -509,6 +509,15 @@ func resolveSignedStorageURL(baseURL, signed string) string {
 }
 
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
+	return s.uploadStorage(ctx, bucket, path, contentType, data, false)
+}
+
+// UpsertStorage uploads an object, overwriting any existing object at the path.
+func (s *Supabase) UpsertStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
+	return s.uploadStorage(ctx, bucket, path, contentType, data, true)
+}
+
+func (s *Supabase) uploadStorage(ctx context.Context, bucket, path, contentType string, data []byte, upsert bool) error {
 	objectPath := url.PathEscape(path)
 	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
 	u := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.URL, bucket, objectPath)
@@ -519,6 +528,9 @@ func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType 
 	req.Header.Set("apikey", s.ServiceRoleKey)
 	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
 	req.Header.Set("Content-Type", contentType)
+	if upsert {
+		req.Header.Set("x-upsert", "true")
+	}
 
 	res, err := s.Client.Do(req)
 	if err != nil {
