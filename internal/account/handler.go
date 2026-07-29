@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -16,6 +17,7 @@ type Handler struct {
 	Deleter      *Deleter
 	Exporter     *Exporter
 	Preferences  *storage.Preferences
+	Flags        *featureflags.Resolver
 	Models       []string
 	DefaultModel string
 	Personas     []string
@@ -59,6 +61,12 @@ func (h *Handler) getPreferences(w http.ResponseWriter, r *http.Request, userID 
 		customOut = ""
 	}
 	timezone, _ := h.Preferences.GetTimezone(r.Context(), userID)
+	experimental := featureflags.NotesMemoryV2{}
+	if h.Flags != nil {
+		if flags, err := h.Flags.NotesMemoryV2ForUser(r.Context(), userID); err == nil {
+			experimental = flags
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"llm_model":          model,
 		"available_models":   h.Models,
@@ -66,6 +74,7 @@ func (h *Handler) getPreferences(w http.ResponseWriter, r *http.Request, userID 
 		"persona_custom":     customOut,
 		"available_personas": h.Personas,
 		"timezone":           timezone,
+		"experimental":       experimental,
 	})
 }
 
@@ -75,6 +84,12 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 		Persona       string  `json:"persona"`
 		PersonaCustom *string `json:"persona_custom"`
 		Timezone      *string `json:"timezone"`
+		Experimental  *struct {
+			NotesFeed        *bool `json:"notesFeed"`
+			SmartTagging     *bool `json:"smartTagging"`
+			MemoryExtraction *bool `json:"memoryExtraction"`
+			MemoryRetrieval  *bool `json:"memoryRetrieval"`
+		} `json:"experimental"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_body"})
@@ -136,6 +151,31 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 		}
 	}
 
+	// Experimental feature flag overrides (optional).
+	var experimentalOut *featureflags.NotesMemoryV2
+	if body.Experimental != nil {
+		if h.Flags == nil || h.Flags.Store == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "feature_flags_unavailable"})
+			return
+		}
+		overrides := storage.NotesMemoryV2Overrides{
+			NotesFeed:        body.Experimental.NotesFeed,
+			SmartTagging:     body.Experimental.SmartTagging,
+			MemoryExtraction: body.Experimental.MemoryExtraction,
+			MemoryRetrieval:  body.Experimental.MemoryRetrieval,
+		}
+		if err := h.Flags.Store.SetNotesMemoryV2Overrides(r.Context(), userID, overrides); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "feature_flags_failed", "message": err.Error()})
+			return
+		}
+		flags, err := h.Flags.NotesMemoryV2ForUser(r.Context(), userID)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "feature_flags_failed", "message": err.Error()})
+			return
+		}
+		experimentalOut = &flags
+	}
+
 	resp := map[string]any{}
 	if body.LLMModel != "" {
 		resp["llm_model"] = body.LLMModel
@@ -148,6 +188,9 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 	}
 	if body.Timezone != nil {
 		resp["timezone"] = timezoneOut
+	}
+	if experimentalOut != nil {
+		resp["experimental"] = *experimentalOut
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

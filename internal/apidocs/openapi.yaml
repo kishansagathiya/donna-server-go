@@ -435,6 +435,8 @@ paths:
                     type: array
                     items:
                       type: string
+                  experimental:
+                    $ref: "#/components/schemas/ExperimentalFeatures"
         "401":
           description: Missing or invalid token
           content:
@@ -453,13 +455,35 @@ paths:
           application/json:
             schema:
               type: object
-              required: [llm_model]
               properties:
                 llm_model:
                   type: string
+                persona:
+                  type: string
+                persona_custom:
+                  type: string
+                timezone:
+                  type: string
+                experimental:
+                  $ref: "#/components/schemas/ExperimentalFeaturesPatch"
       responses:
         "200":
           description: Preferences updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  llm_model:
+                    type: string
+                  persona:
+                    type: string
+                  persona_custom:
+                    type: string
+                  timezone:
+                    type: string
+                  experimental:
+                    $ref: "#/components/schemas/ExperimentalFeatures"
         "401":
           description: Missing or invalid token
           content:
@@ -587,6 +611,32 @@ components:
         authRequired:
           type: boolean
           description: Whether JWT auth is enforced on protected routes
+
+    ExperimentalFeatures:
+      type: object
+      description: Effective Notes & Memory V2 experimental feature flags for the user
+      properties:
+        notesFeed:
+          type: boolean
+        smartTagging:
+          type: boolean
+        memoryExtraction:
+          type: boolean
+        memoryRetrieval:
+          type: boolean
+
+    ExperimentalFeaturesPatch:
+      type: object
+      description: Partial overrides for experimental feature flags (omitted fields unchanged)
+      properties:
+        notesFeed:
+          type: boolean
+        smartTagging:
+          type: boolean
+        memoryExtraction:
+          type: boolean
+        memoryRetrieval:
+          type: boolean
 
     KnowledgeFormatsResponse:
       type: object

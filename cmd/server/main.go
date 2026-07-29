@@ -290,6 +290,7 @@ func main() {
 		Deleter:      &account.Deleter{DB: supa},
 		Exporter:     &account.Exporter{DB: supa},
 		Preferences:  preferencesStore,
+		Flags:        flagResolver,
 		Models:       cfg.LLMModels,
 		DefaultModel: cfg.LLMModel,
 		Personas:     cfg.Personas,
