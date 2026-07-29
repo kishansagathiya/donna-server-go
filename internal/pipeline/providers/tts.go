@@ -100,8 +100,8 @@ func (t *TTS) streamOpenAI(ctx context.Context, text string, onChunk func(AudioC
 }
 
 func cartesiaVoiceID() string {
-	// Kiara — Indian-accented English, warm assistant tone.
-	voiceID := "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d"
+	// Janvi — calm Indian-accented English for support-style replies.
+	voiceID := "7ea5e9c2-b719-4dc3-b870-5ba5f14d31d8"
 	if envID := strings.TrimSpace(os.Getenv("CARTESIA_VOICE_ID")); envID != "" {
 		return envID
 	}
