@@ -311,7 +311,7 @@ func main() {
 	})).Post("/chat", chatHandler.ServeHTTP)
 
 	ttsProvider := providers.NewTTS(cfg.OpenAIAPIKey, cfg.CartesiaAPIKey, cfg.ElevenLabsAPIKey)
-	ttsHandler := &ttspkg.Handler{TTS: ttsProvider}
+	ttsHandler := &ttspkg.Handler{TTS: ttsProvider, Store: supa}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,
@@ -363,7 +363,7 @@ func main() {
 	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD /memory/facts, review /memory/items|suggestions|feedback", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
-	log.Print("tts: POST /tts (synthesize assistant reply audio)", nil)
+	log.Print("tts: POST /tts (synthesize assistant reply audio, cached in conversation-audio)", nil)
 	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)

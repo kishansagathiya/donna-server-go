@@ -99,12 +99,55 @@ func (t *TTS) streamOpenAI(ctx context.Context, text string, onChunk func(AudioC
 	}
 }
 
-func (t *TTS) streamCartesia(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
+func cartesiaVoiceID() string {
 	// Kiara — Indian-accented English, warm assistant tone.
 	voiceID := "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d"
 	if envID := strings.TrimSpace(os.Getenv("CARTESIA_VOICE_ID")); envID != "" {
-		voiceID = envID
+		return envID
 	}
+	return voiceID
+}
+
+func elevenLabsVoiceID() string {
+	// Sia — Indian English, confident assistant tone (ElevenLabs voice library).
+	voiceID := "XwkIUwRxNu9PpezCu4Vg"
+	if envID := strings.TrimSpace(os.Getenv("ELEVENLABS_VOICE_ID")); envID != "" {
+		return envID
+	}
+	return voiceID
+}
+
+// CacheFingerprint identifies the active provider+voice+model so stored audio
+// is not reused after a voice change.
+func (t *TTS) CacheFingerprint() string {
+	switch {
+	case t.CartesiaKey != "":
+		return "cartesia|sonic-3.5|" + cartesiaVoiceID()
+	case t.ElevenLabsKey != "":
+		return "elevenlabs|eleven_multilingual_v2|" + elevenLabsVoiceID()
+	case t.OpenAIKey != "":
+		return "openai|tts-1|nova"
+	default:
+		return "none"
+	}
+}
+
+// PreferredFormat is the container written by the active TTS provider.
+func (t *TTS) PreferredFormat() string {
+	switch {
+	case t.CartesiaKey != "":
+		return "wav"
+	case t.ElevenLabsKey != "":
+		return "mp3"
+	case t.OpenAIKey != "":
+		return "wav"
+	default:
+		return "wav"
+	}
+}
+
+func (t *TTS) streamCartesia(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
+	voiceID := cartesiaVoiceID()
 	body, _ := json.Marshal(map[string]any{
 		"model_id":   "sonic-3.5",
 		"transcript": text,
@@ -154,11 +197,7 @@ func (t *TTS) streamCartesia(ctx context.Context, text string, onChunk func(Audi
 }
 
 func (t *TTS) streamElevenLabs(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
-	// Sia — Indian English, confident assistant tone (ElevenLabs voice library).
-	voiceID := "XwkIUwRxNu9PpezCu4Vg"
-	if envID := strings.TrimSpace(os.Getenv("ELEVENLABS_VOICE_ID")); envID != "" {
-		voiceID = envID
-	}
+	voiceID := elevenLabsVoiceID()
 	body, _ := json.Marshal(map[string]any{
 		"text":     text,
 		"model_id": "eleven_multilingual_v2",
