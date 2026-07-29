@@ -36,16 +36,16 @@ func NewTTS(openAI, cartesia, elevenLabs string) *TTS {
 }
 
 func (t *TTS) SynthesizeSpeech(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
-	// Prefer ElevenLabs for natural, human-like read-aloud when configured.
+	// Prefer Cartesia for read-aloud (natural, no ElevenLabs subscription required).
 	switch {
-	case t.ElevenLabsKey != "":
-		return t.streamElevenLabs(ctx, text, onChunk)
 	case t.CartesiaKey != "":
 		return t.streamCartesia(ctx, text, onChunk)
+	case t.ElevenLabsKey != "":
+		return t.streamElevenLabs(ctx, text, onChunk)
 	case t.OpenAIKey != "":
 		return t.streamOpenAI(ctx, text, onChunk)
 	default:
-		return fmt.Errorf("no TTS provider configured. Set ELEVENLABS_API_KEY, CARTESIA_API_KEY, or OPENAI_API_KEY")
+		return fmt.Errorf("no TTS provider configured. Set CARTESIA_API_KEY, ELEVENLABS_API_KEY, or OPENAI_API_KEY")
 	}
 }
 
@@ -100,10 +100,16 @@ func (t *TTS) streamOpenAI(ctx context.Context, text string, onChunk func(AudioC
 }
 
 func (t *TTS) streamCartesia(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
+	// Kiara — Indian-accented English, warm assistant tone.
+	voiceID := "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d"
+	if envID := strings.TrimSpace(os.Getenv("CARTESIA_VOICE_ID")); envID != "" {
+		voiceID = envID
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model_id":   "sonic-3.5",
 		"transcript": text,
-		"voice":      map[string]any{"mode": "id", "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02"},
+		"voice":      map[string]any{"mode": "id", "id": voiceID},
+		"language":   "en",
 		"output_format": map[string]any{
 			"container":   "wav",
 			"encoding":    "pcm_s16le",
