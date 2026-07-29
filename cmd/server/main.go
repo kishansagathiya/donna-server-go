@@ -23,6 +23,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/google"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/errreport"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/jobs"
@@ -45,6 +46,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
+
+	reporter := errreport.New(errreport.Config{
+		Enabled: cfg.ErrorReportsEnabled,
+		Token:   cfg.GitHubToken,
+		Repo:    cfg.GitHubIssueRepo,
+	})
+	log.SetErrorHook(func(message string, fields map[string]any) {
+		report := errreport.Report{Source: "server", Context: map[string]string{}}
+		for k, v := range fields {
+			s := fmt.Sprint(v)
+			switch k {
+			case "error":
+				message += ": " + s
+			case "stack":
+				report.Stack = s
+			case "path":
+				report.Route = s
+			default:
+				report.Context[k] = s
+			}
+		}
+		report.Message = message
+		reporter.Report(report)
+	})
 
 	authCfg := appauth.Config{
 		SupabaseURL: cfg.SupabaseURL,
@@ -204,7 +229,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	r.Use(chimiddleware.Recoverer)
+	r.Use(appmiddleware.RecoverWithErrorLog)
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(appmiddleware.CORS)
@@ -222,6 +247,12 @@ func main() {
 	r.Get("/knowledge/formats", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, knowledge.SupportedFormats())
 	})
+
+	// Client error reports → GitHub issues. Public by design (must work when
+	// auth is broken); abuse bounded by per-IP and global rate limits.
+	if reporter.Enabled() {
+		r.Post("/errors", errreport.NewHandler(reporter))
+	}
 
 	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue, Notes: noteSync, Memory: memoryEnqueuer}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
@@ -314,6 +345,11 @@ func main() {
 		log.Print("knowledge base: disabled", nil)
 	}
 	log.Print("knowledge ingest: POST /knowledge/ingest, GET /knowledge/formats", nil)
+	if reporter.Enabled() {
+		log.Print(fmt.Sprintf("error reports: POST /errors → github issues (%s)", cfg.GitHubIssueRepo), nil)
+	} else {
+		log.Print("error reports: disabled (set DONNA_ERROR_REPORTS_ENABLED + GITHUB_TOKEN)", nil)
+	}
 	log.Print("notes: GET /notes/search, POST /notes/daily-check, web-only CRUD at /notes/*", nil)
 	log.Print("intents: GET /intents, POST /intents/{id}/dismiss", nil)
 	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)

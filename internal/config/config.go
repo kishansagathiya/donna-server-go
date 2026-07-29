@@ -61,6 +61,13 @@ type Config struct {
 	MemoryV2Retrieval   bool
 	// BackgroundJobsEnabled runs the durable background_jobs poller.
 	BackgroundJobsEnabled bool
+
+	// ErrorReportsEnabled turns server/client errors into GitHub issues.
+	ErrorReportsEnabled bool
+	// GitHubToken is a fine-grained PAT with Issues: Read & Write on GitHubIssueRepo.
+	GitHubToken string
+	// GitHubIssueRepo is "owner/name" of the repo issues are filed in.
+	GitHubIssueRepo string
 }
 
 const (
@@ -190,6 +197,12 @@ func Load() (*Config, error) {
 	memoryV2Retrieval := parseBool(os.Getenv("DONNA_MEMORY_V2_RETRIEVAL"))
 	backgroundJobsEnabled := parseBool(os.Getenv("DONNA_BACKGROUND_JOBS"))
 
+	errorReportsEnabled := parseBool(os.Getenv("DONNA_ERROR_REPORTS_ENABLED"))
+	githubIssueRepo := strings.TrimSpace(os.Getenv("DONNA_GITHUB_ISSUE_REPO"))
+	if githubIssueRepo == "" {
+		githubIssueRepo = "kishansagathiya/donna"
+	}
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -229,6 +242,9 @@ func Load() (*Config, error) {
 		MemoryV2Extraction:     memoryV2Extraction,
 		MemoryV2Retrieval:      memoryV2Retrieval,
 		BackgroundJobsEnabled:  backgroundJobsEnabled,
+		ErrorReportsEnabled:    errorReportsEnabled,
+		GitHubToken:            strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		GitHubIssueRepo:        githubIssueRepo,
 	}, nil
 }
 

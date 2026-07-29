@@ -101,6 +101,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WebSearch: body.WebSearch,
 	})
 	if err != nil {
+		log.Error("chat turn failed", map[string]any{
+			"userId":    log.ShortID(userID),
+			"sessionId": sessionID,
+			"path":      r.URL.Path,
+			"error":     err.Error(),
+		})
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "chat_failed",
 			"message": err.Error(),
@@ -191,6 +197,12 @@ func (h *Handler) streamReply(
 		WebSearch: body.WebSearch,
 	})
 	if err != nil {
+		log.Error("chat stream turn failed", map[string]any{
+			"userId":    log.ShortID(userID),
+			"sessionId": sessionID,
+			"path":      r.URL.Path,
+			"error":     err.Error(),
+		})
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
 		return
 	}

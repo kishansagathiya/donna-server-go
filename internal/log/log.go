@@ -3,9 +3,18 @@ package log
 import (
 	"fmt"
 	"log"
+	"sync/atomic"
 )
 
 const prefix = "[donna-server-go]"
+
+// errorHook, when set, is invoked by Error with the raw message and fields.
+// It must never block (main wires it to async GitHub issue reporting).
+var errorHook atomic.Value // func(message string, fields map[string]any)
+
+func SetErrorHook(hook func(message string, fields map[string]any)) {
+	errorHook.Store(hook)
+}
 
 func Print(message string, data map[string]any) {
 	if len(data) > 0 {
@@ -21,6 +30,20 @@ func Warn(message string, data map[string]any) {
 		return
 	}
 	log.Printf("%s WARN %s", prefix, message)
+}
+
+// Error logs actionable failures and forwards them to the error hook (GitHub
+// issue reporting). Use for unexpected failures worth an issue; keep Warn for
+// transient/benign conditions.
+func Error(message string, data map[string]any) {
+	if len(data) > 0 {
+		log.Printf("%s ERROR %s %v", prefix, message, data)
+	} else {
+		log.Printf("%s ERROR %s", prefix, message)
+	}
+	if hook, ok := errorHook.Load().(func(string, map[string]any)); ok && hook != nil {
+		hook(message, data)
+	}
 }
 
 func ShortID(id string) string {

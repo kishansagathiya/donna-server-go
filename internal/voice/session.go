@@ -272,7 +272,7 @@ func (s *Session) handleTurnEnd(ctx context.Context) error {
 		Mode:      s.mode,
 	})
 	if err != nil {
-		log.Warn("turn failed", map[string]any{
+		log.Error("turn failed", map[string]any{
 			"session": log.ShortID(s.sessionID),
 			"error":   err.Error(),
 		})

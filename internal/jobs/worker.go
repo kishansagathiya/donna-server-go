@@ -107,6 +107,12 @@ func (w *Worker) runOne(ctx context.Context, job storage.BackgroundJob) {
 }
 
 func (w *Worker) fail(ctx context.Context, job storage.BackgroundJob, runErr error) {
+	log.Error("background job failed", map[string]any{
+		"jobId":    log.ShortID(job.ID),
+		"jobType":  job.JobType,
+		"attempts": job.AttemptCount + 1,
+		"error":    runErr.Error(),
+	})
 	delay := RetryDelay(job.AttemptCount+1, time.Minute)
 	if _, failErr := w.Store.Fail(ctx, job.ID, w.WorkerID, runErr.Error(), delay); failErr != nil {
 		log.Warn("job fail failed", map[string]any{"jobId": log.ShortID(job.ID), "error": failErr.Error()})
