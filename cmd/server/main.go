@@ -102,11 +102,14 @@ func main() {
 	llm := providers.NewLLM(cfg.OpenRouterAPIKey, cfg.LLMModel, cfg.VisionModel)
 	memoryEnqueuer := &memory.Enqueuer{Jobs: jobStore, Flags: flagResolver}
 	memoryExtractor := &memory.Extractor{KB: kbStore, Notes: notesStore, LLM: llm, Flags: flagResolver}
+	noteIndexer := &notes.Indexer{Store: notesStore, LLM: llm}
+	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
 		bgWorker = &jobs.Worker{
 			Store: jobStore,
 			Handlers: map[string]jobs.Handler{
+				storage.JobTypeNoteEnrich:     noteIndexer.HandleJob,
 				storage.JobTypeSmartTagEnrich: enricher.HandleJob,
 				storage.JobTypeMemoryExtract:  memoryExtractor.HandleJob,
 			},
@@ -117,9 +120,6 @@ func main() {
 	_ = bgWorker
 	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
-
-	noteIndexer := &notes.Indexer{Store: notesStore, LLM: llm}
-	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
 
 	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}}
 	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false}

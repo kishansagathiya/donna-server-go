@@ -96,6 +96,11 @@ func (s *Sync) enqueueEnrichment(ctx context.Context, userID, noteID, content st
 		return
 	}
 	if s.Jobs == nil || !s.Jobs.Enabled {
+		// Fallback when durable jobs are off: in-process indexer still labels
+		// urgent/important so Today keeps working in local/dev setups.
+		if s.Queue != nil {
+			s.Queue.Enqueue(noteID)
+		}
 		return
 	}
 	if contentVersion <= 0 {

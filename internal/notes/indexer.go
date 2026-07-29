@@ -57,6 +57,63 @@ type Indexer struct {
 	LLM   *providers.LLM
 }
 
+// HandleJob is a jobs.Handler for JobTypeNoteEnrich.
+// Restores auto urgent/important (+ keywords/category) labeling after Notes V2
+// moved enrichment onto durable background jobs.
+func (idx *Indexer) HandleJob(ctx context.Context, job storage.BackgroundJob) error {
+	if idx == nil || idx.Store == nil || !idx.Store.Enabled {
+		return nil
+	}
+
+	userID := ""
+	if job.UserID != nil {
+		userID = strings.TrimSpace(*job.UserID)
+	}
+	noteID := noteIDFromJob(job)
+	if noteID == "" {
+		return nil
+	}
+
+	if userID != "" {
+		_ = idx.Store.MarkEnrichmentRunning(ctx, userID, noteID)
+	}
+
+	if err := idx.IndexNote(ctx, noteID); err != nil {
+		if userID != "" {
+			_ = idx.Store.MarkEnrichmentFailed(ctx, userID, noteID)
+		}
+		return err
+	}
+
+	if userID != "" {
+		version := int64(1)
+		if job.TargetVersion != nil && *job.TargetVersion > 0 {
+			version = *job.TargetVersion
+		}
+		if err := idx.Store.MarkEnrichmentSucceeded(ctx, userID, noteID, version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func noteIDFromJob(job storage.BackgroundJob) string {
+	if job.TargetID != nil {
+		if id := strings.TrimSpace(*job.TargetID); id != "" {
+			return id
+		}
+	}
+	if len(job.Payload) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return ""
+	}
+	raw, _ := payload["note_id"].(string)
+	return strings.TrimSpace(raw)
+}
+
 func (idx *Indexer) IndexNote(ctx context.Context, noteID string) error {
 	if idx.Store == nil || !idx.Store.Enabled {
 		return nil
