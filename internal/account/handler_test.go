@@ -54,6 +54,22 @@ func TestHandler_getPreferencesUsesDefault(t *testing.T) {
 	}
 }
 
+func TestHandler_rejectsExperimentalWhenFlagsUnavailable(t *testing.T) {
+	h := &Handler{
+		Models:       []string{"provider/default"},
+		DefaultModel: "provider/default",
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/account", strings.NewReader(`{"experimental":{"notesFeed":true}}`))
+	req = req.WithContext(contextWithUser("user-1"))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
 func TestHandler_rejectsUnknownModel(t *testing.T) {
 	h := &Handler{
 		Models:       []string{"provider/default"},
