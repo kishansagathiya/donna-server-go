@@ -157,9 +157,8 @@ func (t *TTS) streamElevenLabs(ctx context.Context, text string, onChunk func(Au
 		"text":     text,
 		"model_id": "eleven_multilingual_v2",
 		"voice_settings": map[string]any{
-			"stability":        0.35,
-			"similarity_boost": 0.8,
-			"style":            0.25,
+			"stability":         0.4,
+			"similarity_boost":  0.85,
 			"use_speaker_boost": true,
 		},
 	})
