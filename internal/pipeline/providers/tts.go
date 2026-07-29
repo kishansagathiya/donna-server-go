@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -34,15 +36,16 @@ func NewTTS(openAI, cartesia, elevenLabs string) *TTS {
 }
 
 func (t *TTS) SynthesizeSpeech(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
+	// Prefer ElevenLabs for natural, human-like read-aloud when configured.
 	switch {
-	case t.OpenAIKey != "":
-		return t.streamOpenAI(ctx, text, onChunk)
-	case t.CartesiaKey != "":
-		return t.streamCartesia(ctx, text, onChunk)
 	case t.ElevenLabsKey != "":
 		return t.streamElevenLabs(ctx, text, onChunk)
+	case t.CartesiaKey != "":
+		return t.streamCartesia(ctx, text, onChunk)
+	case t.OpenAIKey != "":
+		return t.streamOpenAI(ctx, text, onChunk)
 	default:
-		return fmt.Errorf("no TTS provider configured. Set OPENAI_API_KEY, CARTESIA_API_KEY, or ELEVENLABS_API_KEY")
+		return fmt.Errorf("no TTS provider configured. Set ELEVENLABS_API_KEY, CARTESIA_API_KEY, or OPENAI_API_KEY")
 	}
 }
 
@@ -145,10 +148,20 @@ func (t *TTS) streamCartesia(ctx context.Context, text string, onChunk func(Audi
 }
 
 func (t *TTS) streamElevenLabs(ctx context.Context, text string, onChunk func(AudioChunk) error) error {
-	voiceID := "JBFqnCBsd6RMkjVDRZzb"
+	// Sia — Indian English, confident assistant tone (ElevenLabs voice library).
+	voiceID := "XwkIUwRxNu9PpezCu4Vg"
+	if envID := strings.TrimSpace(os.Getenv("ELEVENLABS_VOICE_ID")); envID != "" {
+		voiceID = envID
+	}
 	body, _ := json.Marshal(map[string]any{
 		"text":     text,
-		"model_id": "eleven_turbo_v2_5",
+		"model_id": "eleven_multilingual_v2",
+		"voice_settings": map[string]any{
+			"stability":        0.35,
+			"similarity_boost": 0.8,
+			"style":            0.25,
+			"use_speaker_boost": true,
+		},
 	})
 	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s?output_format=mp3_44100_128", voiceID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
