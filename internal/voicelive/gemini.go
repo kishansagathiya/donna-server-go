@@ -23,12 +23,22 @@ type geminiSetup struct {
 }
 
 type geminiSetupBody struct {
-	Model                    string                 `json:"model"`
-	GenerationConfig         geminiGenerationConfig `json:"generationConfig"`
-	SystemInstruction        geminiContent          `json:"systemInstruction"`
-	Tools                    []geminiTool           `json:"tools,omitempty"`
-	InputAudioTranscription  *geminiEmptyObj        `json:"inputAudioTranscription,omitempty"`
-	OutputAudioTranscription *geminiEmptyObj        `json:"outputAudioTranscription,omitempty"`
+	Model                    string                     `json:"model"`
+	GenerationConfig         geminiGenerationConfig     `json:"generationConfig"`
+	SystemInstruction        geminiContent              `json:"systemInstruction"`
+	Tools                    []geminiTool               `json:"tools,omitempty"`
+	RealtimeInputConfig      *geminiRealtimeInputConfig `json:"realtimeInputConfig,omitempty"`
+	InputAudioTranscription  *geminiEmptyObj            `json:"inputAudioTranscription,omitempty"`
+	OutputAudioTranscription *geminiEmptyObj            `json:"outputAudioTranscription,omitempty"`
+}
+
+type geminiRealtimeInputConfig struct {
+	AutomaticActivityDetection *geminiAutoActivity `json:"automaticActivityDetection,omitempty"`
+}
+
+type geminiAutoActivity struct {
+	EndOfSpeechSensitivity string `json:"endOfSpeechSensitivity,omitempty"`
+	SilenceDurationMs      int    `json:"silenceDurationMs,omitempty"`
 }
 
 type geminiEmptyObj struct{}
@@ -55,9 +65,9 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text         string          `json:"text,omitempty"`
-	InlineData   *geminiBlob     `json:"inlineData,omitempty"`
-	FunctionCall *geminiFnCall   `json:"functionCall,omitempty"`
+	Text         string        `json:"text,omitempty"`
+	InlineData   *geminiBlob   `json:"inlineData,omitempty"`
+	FunctionCall *geminiFnCall `json:"functionCall,omitempty"`
 }
 
 type geminiBlob struct {
@@ -172,6 +182,13 @@ func (g *geminiClient) setup(ctx context.Context, model, systemPrompt, voiceName
 					},
 				}},
 			}},
+			// Prefer waiting through thinking pauses over cutting the user off early.
+			RealtimeInputConfig: &geminiRealtimeInputConfig{
+				AutomaticActivityDetection: &geminiAutoActivity{
+					EndOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+					SilenceDurationMs:      1200,
+				},
+			},
 			InputAudioTranscription:  &geminiEmptyObj{},
 			OutputAudioTranscription: &geminiEmptyObj{},
 		},

@@ -29,14 +29,15 @@ type Session struct {
 	conversationID string
 	gemini         *geminiClient
 
-	mu              sync.Mutex
-	started         bool
-	ended           bool
-	setupDone       bool
-	turnIndex       int
-	userTranscript  strings.Builder
-	asstTranscript  strings.Builder
-	clientWriteMu   sync.Mutex
+	mu             sync.Mutex
+	started        bool
+	ended          bool
+	setupDone      bool
+	turnIndex      int
+	userTranscript strings.Builder
+	asstTranscript strings.Builder
+	pendingAudio   []string // base64 PCM buffered until Gemini setupComplete
+	clientWriteMu  sync.Mutex
 }
 
 func NewSession(
@@ -180,27 +181,64 @@ func formatMemoryHits(hits []memory.Hit, maxChars int) string {
 }
 
 func (s *Session) forwardAudio(ctx context.Context, data string) error {
-	s.mu.Lock()
-	started := s.started
-	setupDone := s.setupDone
-	ended := s.ended
-	gemini := s.gemini
-	s.mu.Unlock()
-
-	if ended || !started {
-		return nil
-	}
-	if gemini == nil || !setupDone {
-		return nil
-	}
 	if strings.TrimSpace(data) == "" {
 		return nil
 	}
+
+	s.mu.Lock()
+	if s.ended || !s.started {
+		s.mu.Unlock()
+		return nil
+	}
+	if !s.setupDone || s.gemini == nil {
+		// Keep a short pre-roll so the first words aren't dropped during setup.
+		s.pendingAudio = append(s.pendingAudio, data)
+		if len(s.pendingAudio) > 50 {
+			s.pendingAudio = s.pendingAudio[len(s.pendingAudio)-50:]
+		}
+		s.mu.Unlock()
+		return nil
+	}
+	gemini := s.gemini
+	s.mu.Unlock()
+
 	if err := gemini.sendAudio(ctx, data); err != nil {
 		log.Warn("voicelive forward audio failed", map[string]any{"error": err.Error()})
 		return s.sendError("audio_forward_failed", "Audio stream interrupted")
 	}
 	return nil
+}
+
+func (s *Session) flushPendingAudio(ctx context.Context) {
+	s.mu.Lock()
+	pending := s.pendingAudio
+	s.pendingAudio = nil
+	gemini := s.gemini
+	s.mu.Unlock()
+	if gemini == nil {
+		return
+	}
+	for _, chunk := range pending {
+		if err := gemini.sendAudio(ctx, chunk); err != nil {
+			log.Warn("voicelive flush pending audio failed", map[string]any{"error": err.Error()})
+			return
+		}
+	}
+}
+
+// applyTranscriptFragment concatenates Gemini's incremental fragment as-is
+// (fragments already include leading spaces) and returns the full turn text.
+func (s *Session) applyTranscriptFragment(role string, fragment string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch role {
+	case "user":
+		s.userTranscript.WriteString(fragment)
+		return strings.TrimSpace(s.userTranscript.String())
+	default:
+		s.asstTranscript.WriteString(fragment)
+		return strings.TrimSpace(s.asstTranscript.String())
+	}
 }
 
 func (s *Session) readGeminiLoop(ctx context.Context) {
@@ -232,6 +270,7 @@ func (s *Session) readGeminiLoop(ctx context.Context) {
 			s.setupDone = true
 			s.mu.Unlock()
 			if !already {
+				s.flushPendingAudio(ctx)
 				_ = s.send(ServerMessage{
 					Type:      ServerSessionReady,
 					SessionID: s.sessionID,
@@ -256,37 +295,26 @@ func (s *Session) readGeminiLoop(ctx context.Context) {
 			_ = s.send(ServerMessage{Type: ServerInterrupted})
 		}
 
-		if sc.InputTranscription != nil {
-			text := strings.TrimSpace(sc.InputTranscription.Text)
-			if text != "" {
-				s.mu.Lock()
-				s.userTranscript.WriteString(text)
-				if !strings.HasSuffix(text, " ") {
-					s.userTranscript.WriteByte(' ')
-				}
-				s.mu.Unlock()
+		if sc.InputTranscription != nil && sc.InputTranscription.Text != "" {
+			// Send full turn snapshot (not delta) so clients replace captions cleanly.
+			full := s.applyTranscriptFragment("user", sc.InputTranscription.Text)
+			if full != "" {
 				_ = s.send(ServerMessage{
 					Type:  ServerTranscript,
 					Role:  "user",
-					Text:  text,
+					Text:  full,
 					Final: false,
 				})
 			}
 		}
 
-		if sc.OutputTranscription != nil {
-			text := strings.TrimSpace(sc.OutputTranscription.Text)
-			if text != "" {
-				s.mu.Lock()
-				s.asstTranscript.WriteString(text)
-				if !strings.HasSuffix(text, " ") {
-					s.asstTranscript.WriteByte(' ')
-				}
-				s.mu.Unlock()
+		if sc.OutputTranscription != nil && sc.OutputTranscription.Text != "" {
+			full := s.applyTranscriptFragment("assistant", sc.OutputTranscription.Text)
+			if full != "" {
 				_ = s.send(ServerMessage{
 					Type:  ServerTranscript,
 					Role:  "assistant",
-					Text:  text,
+					Text:  full,
 					Final: false,
 				})
 			}
@@ -347,12 +375,12 @@ func (s *Session) flushTurn(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
-	// Mark streamed captions final without re-sending full text (avoids duplicate bubbles).
+	// Finalize with the cleaned full text so captions match what we persist.
 	if user != "" {
-		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "user", Final: true})
+		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "user", Text: user, Final: true})
 	}
 	if asst != "" {
-		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "assistant", Final: true})
+		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "assistant", Text: asst, Final: true})
 	}
 
 	if convID == "" || s.convs == nil || !s.convs.Enabled || s.userID == "" {
