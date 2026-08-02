@@ -39,6 +39,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	ttspkg "github.com/kishansagathiya/donna/donna-server-go/internal/tts"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/voice"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/voicelive"
 )
 
 func main() {
@@ -332,6 +333,17 @@ func main() {
 	}
 	r.Get("/voice", voiceHandler.ServeHTTP)
 
+	liveHandler := &voicelive.Handler{
+		Config: cfg,
+		Auth:   authCfg,
+		Retriever: &memory.Retriever{
+			KB:    kbStore,
+			Notes: notesStore,
+		},
+		Convs: convStore,
+	}
+	r.Get("/voice/live", liveHandler.ServeHTTP)
+
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	server := &http.Server{Addr: addr, Handler: r}
 
@@ -375,8 +387,15 @@ func main() {
 	log.Print(fmt.Sprintf("vision model: %s", cfg.VisionModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)
+	log.Print(fmt.Sprintf("voice live (Gemini): ws://127.0.0.1:%d/voice/live", cfg.Port), nil)
+	if cfg.GeminiAPIKey == "" {
+		log.Print("voice live: disabled (set GEMINI_API_KEY)", nil)
+	} else {
+		log.Print(fmt.Sprintf("voice live model: %s", cfg.LiveModel), nil)
+	}
 	for _, ip := range lanAddresses() {
 		log.Print(fmt.Sprintf("voice (physical device): ws://%s:%d/voice", ip, cfg.Port), nil)
+		log.Print(fmt.Sprintf("voice live (physical device): ws://%s:%d/voice/live", ip, cfg.Port), nil)
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

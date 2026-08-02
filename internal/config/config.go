@@ -68,6 +68,11 @@ type Config struct {
 	GitHubToken string
 	// GitHubIssueRepo is "owner/name" of the repo issues are filed in.
 	GitHubIssueRepo string
+
+	// Gemini Live (realtime Voice harness). Optional — /voice/live requires GeminiAPIKey.
+	GeminiAPIKey  string
+	LiveModel     string
+	LiveVoiceName string
 }
 
 const (
@@ -203,6 +208,15 @@ func Load() (*Config, error) {
 		githubIssueRepo = "kishansagathiya/donna"
 	}
 
+	liveModel := strings.TrimSpace(os.Getenv("DONNA_LIVE_MODEL"))
+	if liveModel == "" {
+		liveModel = "gemini-2.5-flash-native-audio-preview-12-2025"
+	}
+	liveVoice := strings.TrimSpace(os.Getenv("DONNA_LIVE_VOICE_NAME"))
+	if liveVoice == "" {
+		liveVoice = "Aoede"
+	}
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -245,6 +259,9 @@ func Load() (*Config, error) {
 		ErrorReportsEnabled:    errorReportsEnabled,
 		GitHubToken:            strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		GitHubIssueRepo:        githubIssueRepo,
+		GeminiAPIKey:           strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+		LiveModel:              liveModel,
+		LiveVoiceName:          liveVoice,
 	}, nil
 }
 
