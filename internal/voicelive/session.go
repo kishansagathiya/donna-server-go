@@ -347,11 +347,12 @@ func (s *Session) flushTurn(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
+	// Mark streamed captions final without re-sending full text (avoids duplicate bubbles).
 	if user != "" {
-		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "user", Text: user, Final: true})
+		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "user", Final: true})
 	}
 	if asst != "" {
-		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "assistant", Text: asst, Final: true})
+		_ = s.send(ServerMessage{Type: ServerTranscript, Role: "assistant", Final: true})
 	}
 
 	if convID == "" || s.convs == nil || !s.convs.Enabled || s.userID == "" {
