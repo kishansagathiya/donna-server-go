@@ -318,7 +318,10 @@ func main() {
 		Auth:        authCfg,
 	})).Post("/tts", ttsHandler.ServeHTTP)
 
-	conversationsHandler := &conversations.Handler{Store: convStore}
+	conversationsHandler := &conversations.Handler{
+		Store:      convStore,
+		WebAppBase: cfg.WebAppBase,
+	}
 	conversations.RegisterRoutes(r, authMiddleware, conversationsHandler)
 
 	voiceHandler := &voice.Handler{
@@ -365,7 +368,8 @@ func main() {
 	log.Print("memory: GET/PATCH /memory/profile, CRUD /memory/facts, review /memory/items|suggestions|feedback", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("tts: POST /tts (synthesize assistant reply audio, cached in conversation-audio)", nil)
-	log.Print("conversations: GET /conversations, GET /conversations/{id}", nil)
+	log.Print("conversations: GET /conversations, GET /conversations/{id}, POST/GET/DELETE /conversations/{id}/share", nil)
+	log.Print("share: GET /share/{token} (public)", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
 	log.Print(fmt.Sprintf("vision model: %s", cfg.VisionModel), nil)

@@ -13,7 +13,8 @@ import (
 )
 
 type Handler struct {
-	Store *storage.Conversations
+	Store      *storage.Conversations
+	WebAppBase string // e.g. https://donnadoesit.com — used to build share URLs
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +317,159 @@ func (h *Handler) UpsertFeedback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type shareResponse struct {
+	URL       string  `json:"url"`
+	Token     string  `json:"token"`
+	CreatedAt string  `json:"created_at"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+func (h *Handler) shareURL(token string) string {
+	base := strings.TrimRight(strings.TrimSpace(h.WebAppBase), "/")
+	if base == "" {
+		base = "https://donnadoesit.com"
+	}
+	return base + "/share/" + token
+}
+
+func (h *Handler) GetShare(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversations_disabled"})
+		return
+	}
+
+	conversationID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if conversationID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_id"})
+		return
+	}
+
+	share, err := h.Store.GetShareForUser(r.Context(), userID, conversationID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		code := "share_failed"
+		if err.Error() == "conversation not found" {
+			status = http.StatusNotFound
+			code = "not_found"
+		}
+		writeJSON(w, status, map[string]string{"error": code, "message": err.Error()})
+		return
+	}
+	if share == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, shareResponse{
+		URL:       h.shareURL(share.Token),
+		Token:     share.Token,
+		CreatedAt: share.CreatedAt,
+		ExpiresAt: share.ExpiresAt,
+	})
+}
+
+func (h *Handler) CreateShare(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversations_disabled"})
+		return
+	}
+
+	conversationID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if conversationID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_id"})
+		return
+	}
+
+	share, err := h.Store.CreateShare(r.Context(), userID, conversationID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		code := "share_failed"
+		if err.Error() == "conversation not found" {
+			status = http.StatusNotFound
+			code = "not_found"
+		}
+		writeJSON(w, status, map[string]string{"error": code, "message": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, shareResponse{
+		URL:       h.shareURL(share.Token),
+		Token:     share.Token,
+		CreatedAt: share.CreatedAt,
+		ExpiresAt: share.ExpiresAt,
+	})
+}
+
+func (h *Handler) RevokeShare(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversations_disabled"})
+		return
+	}
+
+	conversationID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if conversationID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_id"})
+		return
+	}
+
+	if err := h.Store.RevokeShare(r.Context(), userID, conversationID); err != nil {
+		status := http.StatusInternalServerError
+		code := "revoke_failed"
+		if err.Error() == "conversation not found" {
+			status = http.StatusNotFound
+			code = "not_found"
+		}
+		writeJSON(w, status, map[string]string{"error": code, "message": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// GetPublicShare serves a shared conversation without authentication.
+func (h *Handler) GetPublicShare(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversations_disabled"})
+		return
+	}
+
+	token := strings.TrimSpace(chi.URLParam(r, "token"))
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_token"})
+		return
+	}
+
+	detail, err := h.Store.GetPublicByShareToken(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":   "load_failed",
+			"message": err.Error(),
+		})
+		return
+	}
+	if detail == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func parseLimit(raw string, defaultLimit int) int {
 	if raw == "" {
 		return defaultLimit
@@ -346,6 +500,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler, h *Handler) {
+	// Public shared conversation view (no auth).
+	r.Get("/share/{token}", h.GetPublicShare)
+
 	r.Route("/conversations", func(r chi.Router) {
 		r.Use(authMiddleware)
 		r.Get("/", h.List)
@@ -353,6 +510,9 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		// Static /session routes must be registered before /{id}.
 		r.Delete("/session/{sessionId}/turns", h.TruncateTurns)
 		r.Put("/session/{sessionId}/turns/{turnIndex}/feedback", h.UpsertFeedback)
+		r.Get("/{id}/share", h.GetShare)
+		r.Post("/{id}/share", h.CreateShare)
+		r.Delete("/{id}/share", h.RevokeShare)
 		r.Get("/{id}", h.Get)
 		r.Patch("/{id}", h.Patch)
 		r.Delete("/{id}", h.Delete)
