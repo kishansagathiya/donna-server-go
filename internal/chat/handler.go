@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -154,8 +156,17 @@ func (h *Handler) streamReply(
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
+	var writeMu sync.Mutex
 	writeSSE := func(event, data string) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		flusher.Flush()
+	}
+	writeKeepalive := func() {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, _ = fmt.Fprintf(w, ": keepalive\n\n")
 		flusher.Flush()
 	}
 	writePhase := func(phase protocol.TurnPhase, host string) {
@@ -165,6 +176,23 @@ func (h *Handler) streamReply(
 		}
 		writeSSE("phase", mustJSON(payload))
 	}
+
+	// Reasoning models can sit quiet for a long time before the first content
+	// token. Keep the SSE connection alive so proxies/browsers do not drop it.
+	keepaliveDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepaliveDone:
+				return
+			case <-ticker.C:
+				writeKeepalive()
+			}
+		}
+	}()
+	defer close(keepaliveDone)
 
 	writeSSE("session", mustJSON(map[string]string{"session_id": sessionID}))
 
@@ -190,6 +218,7 @@ func (h *Handler) streamReply(
 		OnReply: func(text string) {
 			writeSSE("chunk", mustJSON(map[string]string{"text": text}))
 		},
+		OnActivity: writeKeepalive,
 	}, pipeline.TurnOptions{
 		UserID:    userID,
 		SessionID: sessionID,

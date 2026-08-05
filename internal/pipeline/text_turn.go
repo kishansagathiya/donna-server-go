@@ -13,9 +13,10 @@ import (
 )
 
 type TextTurnCallbacks struct {
-	OnPhase  func(protocol.TurnPhase)
-	OnStatus func(phase protocol.TurnPhase, host string)
-	OnReply  func(string)
+	OnPhase    func(protocol.TurnPhase)
+	OnStatus   func(phase protocol.TurnPhase, host string)
+	OnReply    func(string)
+	OnActivity func()
 }
 
 func (e *Engine) RunTextTurn(
@@ -115,6 +116,7 @@ func (e *Engine) RunTextTurn(
 	baseOpts := providers.ChatCompletionOptions{
 		WebSearch:           options.WebSearch,
 		WebSearchMaxResults: 3,
+		OnActivity:          callbacks.OnActivity,
 	}
 
 	var toolCitations []tools.Citation

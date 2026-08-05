@@ -15,11 +15,14 @@ import (
 const openRouterBase = "https://openrouter.ai/api/v1"
 
 type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content,omitempty"`
+	// ReasoningContent is required by Moonshot/Kimi on assistant history turns
+	// when thinking is enabled. Empty string is accepted; omitting the field is not.
+	ReasoningContent *string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string      `json:"tool_call_id,omitempty"`
+	Name             string      `json:"name,omitempty"`
 }
 
 type ToolCall struct {
@@ -58,6 +61,9 @@ type ChatCompletionOptions struct {
 	WebSearchMaxResults int
 	Tools               []ToolDefinition
 	ToolChoice          any // "auto" | "none" | map
+	// OnActivity is invoked on OpenRouter keepalives and reasoning-only
+	// deltas so callers can flush SSE heartbeats to the browser.
+	OnActivity func()
 }
 
 type ChatCompletionMetadata struct {
@@ -83,7 +89,8 @@ func NewLLM(apiKey, model, visionModel string) *LLM {
 		APIKey:      apiKey,
 		Model:       model,
 		VisionModel: visionModel,
-		Client:      &http.Client{Timeout: 120 * time.Second},
+		// Reasoning models (e.g. kimi-k3) can think for minutes before content.
+		Client: &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -126,12 +133,13 @@ func BuildLLMMessages(systemPrompt string, history []ChatMessage, userMessage st
 }
 
 func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatCompletionOptions) ([]byte, error) {
+	model, webSearch := normalizeModelAndWebSearch(l.Model, options.WebSearch)
 	payload := map[string]any{
-		"model":    l.Model,
-		"messages": messages,
+		"model":    model,
+		"messages": messagesForModel(model, messages),
 		"stream":   stream,
 	}
-	if options.WebSearch {
+	if webSearch {
 		maxResults := options.WebSearchMaxResults
 		if maxResults <= 0 {
 			maxResults = 3
@@ -150,6 +158,52 @@ func (l *LLM) chatRequestBody(messages []ChatMessage, stream bool, options ChatC
 		}
 	}
 	return json.Marshal(payload)
+}
+
+// normalizeModelAndWebSearch maps OpenRouter ":online" suffixes onto the base
+// model + web plugin. Kimi K3 currently fails with OpenRouter's web plugin, so
+// :online / web search is ignored for that model.
+func normalizeModelAndWebSearch(model string, webSearch bool) (string, bool) {
+	model = strings.TrimSpace(model)
+	online := strings.HasSuffix(model, ":online")
+	if online {
+		model = strings.TrimSuffix(model, ":online")
+	}
+	if isKimiK3(model) {
+		return model, false
+	}
+	if online {
+		return model, true
+	}
+	return model, webSearch
+}
+
+func isKimiK3(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	lower = strings.TrimSuffix(lower, ":online")
+	return strings.Contains(lower, "kimi-k3")
+}
+
+func messagesForModel(model string, messages []ChatMessage) []ChatMessage {
+	if !requiresAssistantReasoningContent(model) {
+		return messages
+	}
+	out := make([]ChatMessage, len(messages))
+	copy(out, messages)
+	empty := ""
+	for i := range out {
+		if out[i].Role == "assistant" && out[i].ReasoningContent == nil {
+			// Kimi rejects multi-turn history when thinking is on but prior
+			// assistant messages omit reasoning_content.
+			out[i].ReasoningContent = &empty
+		}
+	}
+	return out
+}
+
+func requiresAssistantReasoningContent(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "moonshotai/kimi") || strings.Contains(lower, "kimi-k")
 }
 
 func (l *LLM) StreamCompletion(ctx context.Context, messages []ChatMessage, onChunk func(string) error) error {
@@ -187,10 +241,19 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 	receivedContent := false
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	notifyActivity := func() {
+		if options.OnActivity != nil {
+			options.OnActivity()
+		}
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		// OpenRouter sends SSE comments (e.g. ": OPENROUTER PROCESSING") as keepalives.
-		if strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, ":") {
+			notifyActivity()
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -198,9 +261,12 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 			continue
 		}
 
-		text, citations, toolDeltas, finishReason, streamErr := parseStreamChunk(payload)
+		text, citations, toolDeltas, finishReason, activity, streamErr := parseStreamChunk(payload)
 		if streamErr != nil {
 			return ChatCompletionMetadata{}, streamErr
+		}
+		if activity {
+			notifyActivity()
 		}
 		if len(citations) > 0 {
 			meta.WebCitations = appendURLCitations(meta.WebCitations, citations)
@@ -232,7 +298,7 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 		}
 	}
 	if !receivedContent && len(meta.ToolCalls) == 0 {
-		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply")
+		return ChatCompletionMetadata{}, fmt.Errorf("OpenRouter LLM returned an empty reply (model %s). Try another model in Profile, or disable web search", l.Model)
 	}
 	return meta, nil
 }
@@ -240,7 +306,9 @@ func (l *LLM) StreamCompletionWithOptions(ctx context.Context, messages []ChatMe
 // parseStreamChunk extracts text deltas, citations, and tool-call deltas from one
 // OpenRouter SSE payload. Mid-stream provider failures arrive as HTTP 200 with an
 // error field and/or finish_reason "error" — those must not be treated as empty success.
-func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, toolDeltas []streamToolCallDelta, finishReason string, err error) {
+// activity is true when the chunk indicates the model is still working
+// (reasoning tokens) without producing visible content yet.
+func parseStreamChunk(payload string) (text string, citations []urlCitationAnnotation, toolDeltas []streamToolCallDelta, finishReason string, activity bool, err error) {
 	var chunk struct {
 		Error *struct {
 			Message string `json:"message"`
@@ -249,45 +317,75 @@ func parseStreamChunk(payload string) (text string, citations []urlCitationAnnot
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
-				Content     string                  `json:"content"`
-				ToolCalls   []streamToolCallDelta   `json:"tool_calls"`
-				Annotations []urlCitationAnnotation `json:"annotations"`
+				Content          json.RawMessage         `json:"content"`
+				Reasoning        string                  `json:"reasoning"`
+				ReasoningContent string                  `json:"reasoning_content"`
+				ReasoningDetails json.RawMessage         `json:"reasoning_details"`
+				ToolCalls        []streamToolCallDelta   `json:"tool_calls"`
+				Annotations      []urlCitationAnnotation `json:"annotations"`
 			} `json:"delta"`
 			Message struct {
-				Content     string                  `json:"content"`
+				Content     json.RawMessage         `json:"content"`
 				Annotations []urlCitationAnnotation `json:"annotations"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if unmarshalErr := json.Unmarshal([]byte(payload), &chunk); unmarshalErr != nil {
-		return "", nil, nil, "", nil
+		return "", nil, nil, "", false, nil
 	}
 	if chunk.Error != nil {
 		msg := strings.TrimSpace(chunk.Error.Message)
 		if msg == "" {
 			msg = "provider stream error"
 		}
-		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: %s", msg)
+		return "", nil, nil, "", false, fmt.Errorf("OpenRouter LLM stream error: %s", msg)
 	}
 	if len(chunk.Choices) == 0 {
-		return "", nil, nil, "", nil
+		return "", nil, nil, "", false, nil
 	}
 	choice := chunk.Choices[0]
 	if strings.EqualFold(choice.FinishReason, "error") {
-		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
+		return "", nil, nil, "", false, fmt.Errorf("OpenRouter LLM stream error: provider disconnected")
 	}
 	if strings.EqualFold(choice.FinishReason, "content_filter") {
-		return "", nil, nil, "", fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
+		return "", nil, nil, "", false, fmt.Errorf("OpenRouter LLM stream error: response blocked by content filter")
 	}
 	citations = append(citations, choice.Delta.Annotations...)
 	citations = append(citations, choice.Message.Annotations...)
 	toolDeltas = choice.Delta.ToolCalls
 	finishReason = strings.TrimSpace(choice.FinishReason)
-	text = choice.Delta.Content
+	text = extractTextContent(choice.Delta.Content)
 	if text == "" {
-		text = choice.Message.Content
+		text = extractTextContent(choice.Message.Content)
 	}
-	return text, citations, toolDeltas, finishReason, nil
+	if text == "" && len(toolDeltas) == 0 {
+		activity = choice.Delta.Reasoning != "" ||
+			choice.Delta.ReasoningContent != "" ||
+			len(choice.Delta.ReasoningDetails) > 0
+	}
+	return text, citations, toolDeltas, finishReason, activity, nil
+}
+
+func extractTextContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, part := range parts {
+			b.WriteString(part.Text)
+		}
+		return b.String()
+	}
+	return ""
 }
 
 // CompleteOnceWithOptions runs a non-streaming completion. Used for tool rounds
