@@ -198,9 +198,10 @@ func Load() (*Config, error) {
 
 	notesV2Feed := parseBool(os.Getenv("DONNA_NOTES_V2_FEED"))
 	notesV2SmartTagging := parseBool(os.Getenv("DONNA_NOTES_V2_SMART_TAGGING"))
-	memoryV2Extraction := parseBool(os.Getenv("DONNA_MEMORY_V2_EXTRACTION"))
-	memoryV2Retrieval := parseBool(os.Getenv("DONNA_MEMORY_V2_RETRIEVAL"))
-	backgroundJobsEnabled := parseBool(os.Getenv("DONNA_BACKGROUND_JOBS"))
+	// Memory V2 extract/retrieve + background jobs default on when unset.
+	memoryV2Extraction := parseBoolDefault(os.Getenv("DONNA_MEMORY_V2_EXTRACTION"), true)
+	memoryV2Retrieval := parseBoolDefault(os.Getenv("DONNA_MEMORY_V2_RETRIEVAL"), true)
+	backgroundJobsEnabled := parseBoolDefault(os.Getenv("DONNA_BACKGROUND_JOBS"), true)
 
 	errorReportsEnabled := parseBool(os.Getenv("DONNA_ERROR_REPORTS_ENABLED"))
 	githubIssueRepo := strings.TrimSpace(os.Getenv("DONNA_GITHUB_ISSUE_REPO"))
@@ -266,11 +267,20 @@ func Load() (*Config, error) {
 }
 
 func parseBool(raw string) bool {
+	return parseBoolDefault(raw, false)
+}
+
+// parseBoolDefault treats empty/unset as def; explicit false/0/no/off disable.
+func parseBoolDefault(raw string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return def
 	case "1", "true", "yes", "on":
 		return true
-	default:
+	case "0", "false", "no", "off":
 		return false
+	default:
+		return def
 	}
 }
 

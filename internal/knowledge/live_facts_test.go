@@ -23,6 +23,7 @@ func TestExtractObviousFacts_nameVariants(t *testing.T) {
 		{"I'm Sarah", "User's name is Sarah"},
 		{"call me Alex", "User's name is Alex"},
 		{"I am Jordan Lee", "User's name is Jordan Lee"},
+		{"My name is Kishan", "User's name is Kishan"},
 	}
 
 	for _, tt := range tests {
@@ -32,6 +33,26 @@ func TestExtractObviousFacts_nameVariants(t *testing.T) {
 		}
 		if facts[0].Fact != tt.want {
 			t.Fatalf("content %q: got fact %q, want %q", tt.content, facts[0].Fact, tt.want)
+		}
+	}
+}
+
+func TestExtractObviousFacts_rejectsProgressiveIm(t *testing.T) {
+	rejects := []string{
+		"I'm building Donna",
+		"I'm watching right now",
+		"I'm going to the store",
+		"I'm not sure",
+		"I am a developer",
+		"I'm working on memory",
+		"User: I'm building Donna",
+	}
+	for _, content := range rejects {
+		facts := ExtractObviousFacts([]SourceSlice{{Content: content}})
+		for _, f := range facts {
+			if f.Topic != nil && *f.Topic == "identity" {
+				t.Fatalf("content %q: should not extract identity fact, got %q", content, f.Fact)
+			}
 		}
 	}
 }

@@ -382,6 +382,13 @@ func (h *Handler) persistFacts(userID, sessionID, transcript string) {
 	if h.Engine.KB == nil || transcript == "" {
 		return
 	}
+	// When Memory V2 extraction is on, structured extract jobs own writes —
+	// skip legacy regex live facts so they cannot invent identity junk.
+	if h.Engine.Flags != nil && userID != "" {
+		if flags, err := h.Engine.Flags.NotesMemoryV2ForUser(context.Background(), userID); err == nil && flags.MemoryExtraction {
+			return
+		}
+	}
 	knowledge.PersistLiveFactsAsync(h.Engine.KB, knowledge.LiveFactsInput{
 		UserID:         userID,
 		Transcript:     transcript,
