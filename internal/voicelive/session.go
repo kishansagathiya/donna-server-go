@@ -29,15 +29,16 @@ type Session struct {
 	conversationID string
 	gemini         *geminiClient
 
-	mu             sync.Mutex
-	started        bool
-	ended          bool
-	setupDone      bool
-	turnIndex      int
-	userTranscript strings.Builder
-	asstTranscript strings.Builder
-	pendingAudio   []string // base64 PCM buffered until Gemini setupComplete
-	clientWriteMu  sync.Mutex
+	mu               sync.Mutex
+	started          bool
+	ended            bool
+	setupDone        bool
+	turnIndex        int
+	userTranscript   strings.Builder
+	asstTranscript   strings.Builder
+	lastAssistant    string // last finalized assistant turn (echo detection)
+	pendingAudio     []string // base64 PCM buffered until Gemini setupComplete
+	clientWriteMu    sync.Mutex
 }
 
 func NewSession(
@@ -241,6 +242,12 @@ func (s *Session) applyTranscriptFragment(role string, fragment string) string {
 	}
 }
 
+func (s *Session) clearUserTranscript() {
+	s.mu.Lock()
+	s.userTranscript.Reset()
+	s.mu.Unlock()
+}
+
 func (s *Session) readGeminiLoop(ctx context.Context) {
 	for {
 		s.mu.Lock()
@@ -299,12 +306,21 @@ func (s *Session) readGeminiLoop(ctx context.Context) {
 			// Send full turn snapshot (not delta) so clients replace captions cleanly.
 			full := s.applyTranscriptFragment("user", sc.InputTranscription.Text)
 			if full != "" {
-				_ = s.send(ServerMessage{
-					Type:  ServerTranscript,
-					Role:  "user",
-					Text:  full,
-					Final: false,
-				})
+				s.mu.Lock()
+				asst := strings.TrimSpace(s.asstTranscript.String())
+				lastAsst := s.lastAssistant
+				s.mu.Unlock()
+				// Speaker echo is often transcribed as the next "user" turn.
+				if looksLikeEcho(full, asst) || looksLikeEcho(full, lastAsst) {
+					s.clearUserTranscript()
+				} else {
+					_ = s.send(ServerMessage{
+						Type:  ServerTranscript,
+						Role:  "user",
+						Text:  full,
+						Final: false,
+					})
+				}
 			}
 		}
 
@@ -366,8 +382,15 @@ func (s *Session) flushTurn(ctx context.Context) {
 	s.mu.Lock()
 	user := strings.TrimSpace(s.userTranscript.String())
 	asst := strings.TrimSpace(s.asstTranscript.String())
+	lastAsst := s.lastAssistant
+	if looksLikeEcho(user, asst) || looksLikeEcho(user, lastAsst) {
+		user = ""
+	}
 	s.userTranscript.Reset()
 	s.asstTranscript.Reset()
+	if asst != "" {
+		s.lastAssistant = asst
+	}
 	convID := s.conversationID
 	turnIdx := s.turnIndex
 	if user != "" || asst != "" {
