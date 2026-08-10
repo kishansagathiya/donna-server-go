@@ -22,6 +22,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/google"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/cafe"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/errreport"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
@@ -255,6 +256,9 @@ func main() {
 	if reporter.Enabled() {
 		r.Post("/errors", errreport.NewHandler(reporter))
 	}
+
+	// Donna Cafe live "N online" counter — public HTTP heartbeats, no PartyKit.
+	cafe.RegisterRoutes(r, cafe.NewHandler())
 
 	ingestHandler := &knowledge.IngestHandler{KB: kbStore, Queue: compileQueue, Notes: noteSync, Memory: memoryEnqueuer}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
