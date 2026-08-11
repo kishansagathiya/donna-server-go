@@ -15,14 +15,15 @@ import (
 )
 
 const (
-	uploadURLTTL     = time.Hour
-	maxImportBytes   = 512 * 1024 * 1024
+	uploadURLTTL      = time.Hour
+	maxImportBytes    = 512 * 1024 * 1024
+	uploadContentType = "application/zip"
 )
 
 // Handler exposes REST routes for ChatGPT export import.
 type Handler struct {
 	Imports *storage.ChatGPTImports
-	DB      *storage.Supabase
+	Blobs   storage.ImportBlobStore
 	Jobs    *storage.BackgroundJobs
 }
 
@@ -35,7 +36,7 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Imports == nil || !h.Imports.Enabled || h.DB == nil {
+	if h == nil || h.Imports == nil || !h.Imports.Enabled || h.Blobs == nil || !h.Blobs.Enabled() {
 		writeErr(w, http.StatusServiceUnavailable, "imports_disabled", "ChatGPT import is unavailable")
 		return
 	}
@@ -54,19 +55,24 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	signed, err := h.DB.CreateSignedUploadURL(r.Context(), storage.ChatGPTImportsBucket, storagePath, uploadURLTTL)
+	uploadURL, err := h.Blobs.PresignPut(r.Context(), storagePath, uploadContentType, uploadURLTTL)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "upload_url_failed", err.Error())
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":           imp.ID,
-		"status":       imp.Status,
-		"upload_url":   signed.SignedURL,
-		"token":        signed.Token,
-		"path":         signed.Path,
-		"bucket":       storage.ChatGPTImportsBucket,
+		"id":            imp.ID,
+		"status":        imp.Status,
+		"upload_url":    uploadURL,
+		"upload_method": "PUT",
+		"upload_headers": map[string]string{
+			"Content-Type": uploadContentType,
+		},
+		"token":        "",
+		"path":         storagePath,
+		"bucket":       h.Blobs.Bucket(),
+		"provider":     "railway_s3",
 		"max_bytes":    maxImportBytes,
 		"expires_in_s": int(uploadURLTTL.Seconds()),
 	})
@@ -118,7 +124,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Imports == nil || !h.Imports.Enabled || h.DB == nil {
+	if h == nil || h.Imports == nil || !h.Imports.Enabled || h.Blobs == nil || !h.Blobs.Enabled() {
 		writeErr(w, http.StatusServiceUnavailable, "imports_disabled", "ChatGPT import is unavailable")
 		return
 	}
@@ -151,7 +157,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exists, err := h.DB.StorageObjectExists(r.Context(), storage.ChatGPTImportsBucket, *imp.StoragePath)
+	exists, err := h.Blobs.ObjectExists(r.Context(), *imp.StoragePath)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "storage_check_failed", err.Error())
 		return

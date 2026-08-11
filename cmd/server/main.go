@@ -89,6 +89,28 @@ func main() {
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
 	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
 	chatgptImportStore := &storage.ChatGPTImports{DB: supa, Enabled: supa.Enabled()}
+	var chatgptBlobs storage.ImportBlobStore
+	if cfg.ChatGPTImportS3Bucket != "" && cfg.ChatGPTImportS3AccessKeyID != "" && cfg.ChatGPTImportS3SecretAccessKey != "" {
+		store, err := storage.NewS3BlobStore(storage.S3BlobStoreConfig{
+			Bucket:          cfg.ChatGPTImportS3Bucket,
+			Endpoint:        cfg.ChatGPTImportS3Endpoint,
+			Region:          cfg.ChatGPTImportS3Region,
+			AccessKeyID:     cfg.ChatGPTImportS3AccessKeyID,
+			SecretAccessKey: cfg.ChatGPTImportS3SecretAccessKey,
+			UsePathStyle:    cfg.ChatGPTImportS3UsePathStyle,
+		})
+		if err != nil {
+			log.Warn("chatgpt import s3 store init failed", map[string]any{"error": err.Error()})
+		} else {
+			chatgptBlobs = store
+			log.Print("chatgpt import: Railway/S3 blob store enabled", map[string]any{
+				"bucket":   store.Bucket(),
+				"endpoint": cfg.ChatGPTImportS3Endpoint,
+			})
+		}
+	} else {
+		log.Print("chatgpt import: blob store not configured (set CHATGPT_IMPORT_S3_BUCKET + credentials)", nil)
+	}
 
 	var bgWorker *jobs.Worker
 	flagResolver := &featureflags.Resolver{
@@ -114,7 +136,7 @@ func main() {
 		KB:      kbStore,
 		Jobs:    jobStore,
 		Memory:  memoryEnqueuer,
-		DB:      supa,
+		Blobs:   chatgptBlobs,
 	}
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
@@ -305,7 +327,7 @@ func main() {
 
 	chatgptimport.RegisterRoutes(r, authMiddleware, &chatgptimport.Handler{
 		Imports: chatgptImportStore,
-		DB:      supa,
+		Blobs:   chatgptBlobs,
 		Jobs:    jobStore,
 	})
 	log.Print("chatgpt import: POST/GET /imports/chatgpt", nil)

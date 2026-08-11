@@ -36,7 +36,7 @@ type Worker struct {
 	Notes   *notes.Sync
 	Jobs    *storage.BackgroundJobs
 	Memory  MemoryEnqueuer
-	DB      *storage.Supabase
+	Blobs   storage.ImportBlobStore
 }
 
 type jobPayload struct {
@@ -74,6 +74,9 @@ func (w *Worker) HandleJob(parent context.Context, job storage.BackgroundJob) er
 	if imp.StoragePath == nil || strings.TrimSpace(*imp.StoragePath) == "" {
 		return w.failImport(ctx, imp.ID, "missing storage_path")
 	}
+	if w.Blobs == nil || !w.Blobs.Enabled() {
+		return w.failImport(ctx, imp.ID, "chatgpt import blob store unavailable")
+	}
 
 	running := storage.ChatGPTImportRunning
 	started := time.Now().UTC().Format(time.RFC3339Nano)
@@ -86,7 +89,7 @@ func (w *Worker) HandleJob(parent context.Context, job storage.BackgroundJob) er
 		return err
 	}
 
-	data, err := w.DB.DownloadStorageLarge(ctx, storage.ChatGPTImportsBucket, *imp.StoragePath, 15*time.Minute)
+	data, err := w.Blobs.Download(ctx, *imp.StoragePath)
 	if err != nil {
 		return w.failImport(ctx, imp.ID, "download failed: "+err.Error())
 	}

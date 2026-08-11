@@ -8,8 +8,6 @@ import (
 )
 
 const (
-	ChatGPTImportsBucket = "chatgpt-imports"
-
 	ChatGPTImportAwaitingUpload = "awaiting_upload"
 	ChatGPTImportQueued         = "queued"
 	ChatGPTImportRunning        = "running"

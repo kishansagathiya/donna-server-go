@@ -73,6 +73,15 @@ type Config struct {
 	GeminiAPIKey  string
 	LiveModel     string
 	LiveVoiceName string
+
+	// ChatGPT import object storage (Railway Buckets / S3-compatible).
+	// When unset, ChatGPT ZIP import is disabled.
+	ChatGPTImportS3Bucket          string
+	ChatGPTImportS3Endpoint        string
+	ChatGPTImportS3Region          string
+	ChatGPTImportS3AccessKeyID     string
+	ChatGPTImportS3SecretAccessKey string
+	ChatGPTImportS3UsePathStyle    bool
 }
 
 const (
@@ -218,6 +227,27 @@ func Load() (*Config, error) {
 		liveVoice = "Aoede"
 	}
 
+	chatgptS3Bucket := strings.TrimSpace(os.Getenv("CHATGPT_IMPORT_S3_BUCKET"))
+	chatgptS3Endpoint := firstNonEmpty(
+		os.Getenv("CHATGPT_IMPORT_S3_ENDPOINT"),
+		os.Getenv("AWS_ENDPOINT_URL"),
+		"https://storage.railway.app",
+	)
+	chatgptS3Region := firstNonEmpty(
+		os.Getenv("CHATGPT_IMPORT_S3_REGION"),
+		os.Getenv("AWS_REGION"),
+		"auto",
+	)
+	chatgptS3AccessKey := firstNonEmpty(
+		os.Getenv("CHATGPT_IMPORT_S3_ACCESS_KEY_ID"),
+		os.Getenv("AWS_ACCESS_KEY_ID"),
+	)
+	chatgptS3Secret := firstNonEmpty(
+		os.Getenv("CHATGPT_IMPORT_S3_SECRET_ACCESS_KEY"),
+		os.Getenv("AWS_SECRET_ACCESS_KEY"),
+	)
+	chatgptS3PathStyle := parseBool(os.Getenv("CHATGPT_IMPORT_S3_USE_PATH_STYLE"))
+
 	return &Config{
 		Host:                   host,
 		Port:                   port,
@@ -263,6 +293,12 @@ func Load() (*Config, error) {
 		GeminiAPIKey:           strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
 		LiveModel:              liveModel,
 		LiveVoiceName:          liveVoice,
+		ChatGPTImportS3Bucket:          chatgptS3Bucket,
+		ChatGPTImportS3Endpoint:        chatgptS3Endpoint,
+		ChatGPTImportS3Region:          chatgptS3Region,
+		ChatGPTImportS3AccessKeyID:     chatgptS3AccessKey,
+		ChatGPTImportS3SecretAccessKey: chatgptS3Secret,
+		ChatGPTImportS3UsePathStyle:    chatgptS3PathStyle,
 	}, nil
 }
 
@@ -318,6 +354,15 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func loadEnv() {
