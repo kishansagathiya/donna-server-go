@@ -15,6 +15,7 @@ import (
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/account"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/actions"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/agents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
@@ -87,6 +88,7 @@ func main() {
 	convStore := &storage.Conversations{DB: supa, Enabled: cfg.PersistConversations}
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
+	agentsStore := &storage.AgentsStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
 	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
 	chatgptImportStore := &storage.ChatGPTImports{DB: supa, Enabled: supa.Enabled()}
 
@@ -101,6 +103,7 @@ func main() {
 		"memoryExtraction": cfg.MemoryV2Extraction,
 		"memoryRetrieval":  cfg.MemoryV2Retrieval,
 		"backgroundJobs":   cfg.BackgroundJobsEnabled,
+		"cloudAgents":      cfg.CloudAgentsEnabled,
 	})
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
@@ -116,21 +119,42 @@ func main() {
 		Memory:  memoryEnqueuer,
 		DB:      supa,
 	}
+
+	memBridge := &agents.MemoryBridge{
+		Retriever: &memory.Retriever{KB: kbStore, Notes: notesStore},
+		MinScore:  cfg.MemoryMinScore,
+	}
+	notesBridge := &agents.NotesBridge{Notes: notesStore}
+	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge)
+	agentHarness := &agents.Harness{
+		Store:    agentsStore,
+		LLM:      llm,
+		Registry: agentRegistry,
+		WorkerID: "donna-server",
+	}
+	agentWorker := &agents.Worker{Store: agentsStore, Harness: agentHarness}
+	agentSpawner := &agents.Spawner{Store: agentsStore, Jobs: jobStore, Mem: memBridge}
+
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
+		handlers := map[string]jobs.Handler{
+			storage.JobTypeNoteEnrich:          noteIndexer.HandleJob,
+			storage.JobTypeSmartTagEnrich:      enricher.HandleJob,
+			storage.JobTypeMemoryExtract:       memoryExtractor.HandleJob,
+			storage.JobTypeChatGPTExportImport: chatgptImportWorker.HandleJob,
+		}
+		if cfg.CloudAgentsEnabled {
+			handlers[storage.JobTypeAgentRun] = agentWorker.HandleJob
+		}
 		bgWorker = &jobs.Worker{
-			Store: jobStore,
-			Handlers: map[string]jobs.Handler{
-				storage.JobTypeNoteEnrich:          noteIndexer.HandleJob,
-				storage.JobTypeSmartTagEnrich:      enricher.HandleJob,
-				storage.JobTypeMemoryExtract:       memoryExtractor.HandleJob,
-				storage.JobTypeChatGPTExportImport: chatgptImportWorker.HandleJob,
-			},
+			Store:    jobStore,
+			Handlers: handlers,
 		}
 		bgWorker.Start()
-		log.Print("background jobs worker enabled", nil)
+		log.Print("background jobs worker enabled", map[string]any{"cloudAgents": cfg.CloudAgentsEnabled})
 	}
 	_ = bgWorker
+	_ = agentSpawner
 	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 
@@ -294,6 +318,12 @@ func main() {
 
 	actionsHandler := &actions.Handler{Store: actionsStore, Executor: actionExecutor}
 	actions.RegisterRoutes(r, authMiddleware, actionsHandler)
+
+	if cfg.CloudAgentsEnabled {
+		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore}
+		agents.RegisterRoutes(r, authMiddleware, agentsHandler)
+		log.Print("cloud agents: /agent-runs enabled", map[string]any{"tools": agentRegistry.Len()})
+	}
 
 	if connectorSvc != nil {
 		connectors.RegisterRoutes(r, authMiddleware, &connectors.Handler{Service: connectorSvc})
