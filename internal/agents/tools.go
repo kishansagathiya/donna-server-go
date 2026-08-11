@@ -1,0 +1,262 @@
+package agents
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
+)
+
+// DefaultToolsets builds the Phase-1 agent tool registry.
+func DefaultToolsets(mem MemorySearcher, notes NoteSearcher) *Registry {
+	reg := NewRegistry()
+	reg.Register(todoTool())
+	reg.Register(requestApprovalTool())
+	if mem != nil {
+		reg.Register(memorySearchTool(mem))
+	}
+	if notes != nil {
+		reg.Register(searchNotesTool(notes))
+	}
+	reg.Register(fetchURLTool())
+	reg.Register(sessionSearchTool())
+	return reg
+}
+
+func todoTool() RegisteredTool {
+	return RegisteredTool{
+		Toolset: "orchestration",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "todo",
+				Description: "Create or update a short plan checklist for this agent run. Keep 3–8 items.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"items": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"id":      map[string]any{"type": "string"},
+									"content": map[string]any{"type": "string"},
+									"status":  map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
+								},
+								"required": []string{"id", "content", "status"},
+							},
+						},
+					},
+					"required": []string{"items"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			args, err := ParseArgs[struct {
+				Items []TodoItem `json:"items"`
+			}](argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if runCtx != nil && runCtx.SetPlan != nil {
+				runCtx.SetPlan(args.Items)
+			}
+			raw, _ := json.Marshal(args.Items)
+			return ToolResult{Content: "Plan updated: " + string(raw), Meta: map[string]any{"plan": args.Items}}, nil
+		},
+	}
+}
+
+func requestApprovalTool() RegisteredTool {
+	return RegisteredTool{
+		Toolset: "orchestration",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "request_approval",
+				Description: "Pause the agent and ask the user to approve an irreversible step (payment, booking, send). Provide a clear summary.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"kind":    map[string]any{"type": "string", "description": "e.g. book_flight, pay, send_email"},
+						"summary": map[string]any{"type": "string"},
+						"details": map[string]any{"type": "object"},
+					},
+					"required": []string{"kind", "summary"},
+				},
+			},
+		},
+		// Handled specially in the harness (pauses run). This handler is a fallback.
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			return ToolResult{Content: "Approval requested. Waiting for user."}, nil
+		},
+	}
+}
+
+func memorySearchTool(mem MemorySearcher) RegisteredTool {
+	return RegisteredTool{
+		Toolset: "memory",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "memory_search",
+				Description: "Search the user's Donna memory (facts, notes snippets, integrations) for personal context relevant to the goal.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+						"limit": map[string]any{"type": "integer"},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			args, err := ParseArgs[struct {
+				Query string `json:"query"`
+				Limit int    `json:"limit"`
+			}](argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			limit := args.Limit
+			if limit <= 0 {
+				limit = 8
+			}
+			hits, err := mem.Search(ctx, runCtx.UserID, args.Query, limit)
+			if err != nil {
+				return ToolResult{Content: "Error: " + err.Error()}, nil
+			}
+			if len(hits) == 0 {
+				return ToolResult{Content: "No memory hits.", Meta: map[string]any{"hits": []any{}}}, nil
+			}
+			var b strings.Builder
+			for i, h := range hits {
+				fmt.Fprintf(&b, "%d. [%s score=%.2f id=%s] %s\n", i+1, h.Source, h.Score, h.ID, truncate(h.Text, 500))
+			}
+			return ToolResult{Content: b.String(), Meta: map[string]any{"hits": hits}}, nil
+		},
+	}
+}
+
+func searchNotesTool(notes NoteSearcher) RegisteredTool {
+	return RegisteredTool{
+		Toolset: "memory",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "search_notes",
+				Description: "Full-text search the user's notes for titles and previews matching a query.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+						"limit": map[string]any{"type": "integer"},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			args, err := ParseArgs[struct {
+				Query string `json:"query"`
+				Limit int    `json:"limit"`
+			}](argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			limit := args.Limit
+			if limit <= 0 {
+				limit = 10
+			}
+			hits, err := notes.Search(ctx, runCtx.UserID, args.Query, limit)
+			if err != nil {
+				return ToolResult{Content: "Error: " + err.Error()}, nil
+			}
+			if len(hits) == 0 {
+				return ToolResult{Content: "No notes found."}, nil
+			}
+			var b strings.Builder
+			for i, h := range hits {
+				title := h.Title
+				if title == "" {
+					title = "(untitled)"
+				}
+				fmt.Fprintf(&b, "%d. %s [%s]\n%s\n\n", i+1, title, h.ID, truncate(h.Preview, 400))
+			}
+			return ToolResult{Content: b.String(), Meta: map[string]any{"notes": hits}}, nil
+		},
+	}
+}
+
+func fetchURLTool() RegisteredTool {
+	inner := tools.NewFetchURLHandler()
+	return RegisteredTool{
+		Toolset:    "web",
+		Definition: tools.FetchURLDefinition(),
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			res, err := inner(ctx, argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			return ToolResult{Content: res.Content, Meta: map[string]any{"host": res.Host}}, nil
+		},
+	}
+}
+
+func sessionSearchTool() RegisteredTool {
+	return RegisteredTool{
+		Toolset: "memory",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "session_search",
+				Description: "Search this agent run's own prior step log (tool results and thoughts) by keyword.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			store, _ := runCtx.Extra["store"].(RunStore)
+			if store == nil {
+				return ToolResult{Content: "session_search unavailable"}, nil
+			}
+			args, err := ParseArgs[struct {
+				Query string `json:"query"`
+			}](argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			q := strings.ToLower(strings.TrimSpace(args.Query))
+			steps, err := store.ListSteps(ctx, runCtx.UserID, runCtx.RunID, 0, 500)
+			if err != nil {
+				return ToolResult{Content: "Error: " + err.Error()}, nil
+			}
+			var b strings.Builder
+			n := 0
+			for _, st := range steps {
+				payload := strings.ToLower(string(st.Payload))
+				if q != "" && !strings.Contains(payload, q) && !strings.Contains(st.Kind, q) {
+					continue
+				}
+				fmt.Fprintf(&b, "seq=%d kind=%s %s\n", st.Seq, st.Kind, truncate(string(st.Payload), 300))
+				n++
+				if n >= 20 {
+					break
+				}
+			}
+			if n == 0 {
+				return ToolResult{Content: "No matching steps."}, nil
+			}
+			return ToolResult{Content: b.String()}, nil
+		},
+	}
+}
