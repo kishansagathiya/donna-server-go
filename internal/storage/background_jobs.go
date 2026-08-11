@@ -13,15 +13,17 @@ const (
 	JobStatusSucceeded  = "succeeded"
 	JobStatusDeadLetter = "dead_letter"
 
-	JobTypeNoteEnrich      = "note_enrich"
-	JobTypeNoteEmbed       = "note_embed"
-	JobTypeMemoryExtract   = "memory_extract"
-	JobTypeSmartTagEnrich  = "smart_tag_enrich"
+	JobTypeNoteEnrich           = "note_enrich"
+	JobTypeNoteEmbed            = "note_embed"
+	JobTypeMemoryExtract        = "memory_extract"
+	JobTypeSmartTagEnrich       = "smart_tag_enrich"
+	JobTypeChatGPTExportImport  = "chatgpt_export_import"
 
 	TargetKindNote         = "note"
 	TargetKindFact         = "fact"
 	TargetKindConversation = "conversation"
 	TargetKindSource       = "source"
+	TargetKindImport       = "import"
 )
 
 type BackgroundJob struct {

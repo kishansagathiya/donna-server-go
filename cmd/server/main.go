@@ -26,6 +26,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/errreport"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
+	chatgptimport "github.com/kishansagathiya/donna/donna-server-go/internal/imports/chatgpt"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/intents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/jobs"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
@@ -87,6 +88,7 @@ func main() {
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
 	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
+	chatgptImportStore := &storage.ChatGPTImports{DB: supa, Enabled: supa.Enabled()}
 
 	var bgWorker *jobs.Worker
 	flagResolver := &featureflags.Resolver{
@@ -107,14 +109,22 @@ func main() {
 	memoryExtractor := &memory.Extractor{KB: kbStore, Notes: notesStore, LLM: llm, Flags: flagResolver}
 	noteIndexer := &notes.Indexer{Store: notesStore, LLM: llm}
 	noteIndexQueue := notes.NewIndexQueue(noteIndexer)
+	chatgptImportWorker := &chatgptimport.Worker{
+		Imports: chatgptImportStore,
+		KB:      kbStore,
+		Jobs:    jobStore,
+		Memory:  memoryEnqueuer,
+		DB:      supa,
+	}
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
 		bgWorker = &jobs.Worker{
 			Store: jobStore,
 			Handlers: map[string]jobs.Handler{
-				storage.JobTypeNoteEnrich:     noteIndexer.HandleJob,
-				storage.JobTypeSmartTagEnrich: enricher.HandleJob,
-				storage.JobTypeMemoryExtract:  memoryExtractor.HandleJob,
+				storage.JobTypeNoteEnrich:          noteIndexer.HandleJob,
+				storage.JobTypeSmartTagEnrich:      enricher.HandleJob,
+				storage.JobTypeMemoryExtract:       memoryExtractor.HandleJob,
+				storage.JobTypeChatGPTExportImport: chatgptImportWorker.HandleJob,
 			},
 		}
 		bgWorker.Start()
@@ -137,6 +147,7 @@ func main() {
 		Flags:   flagResolver,
 		Memory:  memoryEnqueuer,
 	}
+	chatgptImportWorker.Notes = noteSync
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
 		intentQueue.EnqueueConversationTurn(input.UserID, input.ConversationID, input.TurnIndex, input.UserTranscript)
 		memoryEnqueuer.EnqueueFromConversationTurn(
@@ -291,6 +302,13 @@ func main() {
 
 	memoryHandler := &memory.Handler{KB: kbStore}
 	memory.RegisterRoutes(r, authMiddleware, memoryHandler)
+
+	chatgptimport.RegisterRoutes(r, authMiddleware, &chatgptimport.Handler{
+		Imports: chatgptImportStore,
+		DB:      supa,
+		Jobs:    jobStore,
+	})
+	log.Print("chatgpt import: POST/GET /imports/chatgpt", nil)
 
 	accountHandler := &account.Handler{
 		Deleter:      &account.Deleter{DB: supa},

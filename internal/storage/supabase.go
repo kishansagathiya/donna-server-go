@@ -508,6 +508,170 @@ func resolveSignedStorageURL(baseURL, signed string) string {
 	return base + signed
 }
 
+// SignedUpload describes a short-lived direct-to-storage upload target.
+type SignedUpload struct {
+	SignedURL string
+	Token     string
+	Path      string
+}
+
+// CreateSignedUploadURL issues a Supabase Storage upload sign request so clients
+// can PUT large objects without proxying bytes through the Donna API.
+func (s *Supabase) CreateSignedUploadURL(ctx context.Context, bucket, path string, expiresIn time.Duration) (SignedUpload, error) {
+	if !s.Enabled() {
+		return SignedUpload{}, fmt.Errorf("supabase unavailable")
+	}
+	if expiresIn <= 0 {
+		expiresIn = time.Hour
+	}
+
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/upload/sign/%s/%s", s.URL, bucket, objectPath)
+
+	body, err := json.Marshal(map[string]any{"expiresIn": int(expiresIn.Seconds())})
+	if err != nil {
+		return SignedUpload{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return SignedUpload{}, err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return SignedUpload{}, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return SignedUpload{}, fmt.Errorf("storage upload sign %s/%s %d: %s", bucket, path, res.StatusCode, string(raw))
+	}
+
+	var out struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return SignedUpload{}, err
+	}
+	if out.URL == "" {
+		return SignedUpload{}, fmt.Errorf("storage upload sign %s/%s: empty url", bucket, path)
+	}
+	signedURL := resolveSignedStorageURL(s.URL, out.URL)
+	token := out.Token
+	if token == "" {
+		if u, err := url.Parse(signedURL); err == nil {
+			token = u.Query().Get("token")
+		}
+	}
+	return SignedUpload{
+		SignedURL: signedURL,
+		Token:     token,
+		Path:      path,
+	}, nil
+}
+
+// StorageObjectExists reports whether an object exists at bucket/path.
+func (s *Supabase) StorageObjectExists(ctx context.Context, bucket, path string) (bool, error) {
+	if !s.Enabled() {
+		return false, fmt.Errorf("supabase unavailable")
+	}
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/info/%s/%s", s.URL, bucket, objectPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Fallback: some Storage versions lack /object/info — try a ranged GET.
+		raw, _ := io.ReadAll(res.Body)
+		if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		// Retry via HEAD-ish download of 1 byte.
+		exists, err2 := s.storageObjectExistsViaDownload(ctx, bucket, path)
+		if err2 == nil {
+			return exists, nil
+		}
+		return false, fmt.Errorf("storage info %s/%s %d: %s", bucket, path, res.StatusCode, string(raw))
+	}
+	return true, nil
+}
+
+func (s *Supabase) storageObjectExistsViaDownload(ctx context.Context, bucket, path string) (bool, error) {
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.URL, bucket, objectPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+	req.Header.Set("Range", "bytes=0-0")
+
+	res, err := s.Client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if res.StatusCode == http.StatusOK || res.StatusCode == http.StatusPartialContent {
+		return true, nil
+	}
+	raw, _ := io.ReadAll(res.Body)
+	return false, fmt.Errorf("storage exists probe %s/%s %d: %s", bucket, path, res.StatusCode, string(raw))
+}
+
+// DownloadStorageLarge downloads a storage object with an extended timeout for
+// large archives (ChatGPT export ZIPs).
+func (s *Supabase) DownloadStorageLarge(ctx context.Context, bucket, path string, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		timeout = 15 * time.Minute
+	}
+	client := &http.Client{Timeout: timeout}
+	objectPath := url.PathEscape(path)
+	objectPath = strings.ReplaceAll(objectPath, "%2F", "/")
+	u := fmt.Sprintf("%s/storage/v1/object/%s/%s", s.URL, bucket, objectPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", s.ServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+s.ServiceRoleKey)
+
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("storage download %s %d: %s", path, res.StatusCode, string(raw))
+	}
+	return io.ReadAll(res.Body)
+}
+
 func (s *Supabase) UploadStorage(ctx context.Context, bucket, path, contentType string, data []byte) error {
 	return s.uploadStorage(ctx, bucket, path, contentType, data, false)
 }
