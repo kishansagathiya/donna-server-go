@@ -168,7 +168,7 @@ func (w *Worker) HandleJob(ctx context.Context, job storage.BackgroundJob) error
 	return w.Harness.Run(ctx, run)
 }
 
-// ResumeAfterApproval requeues a waiting agent and enqueues a job.
+// ResumeAfterApproval requeues a waiting/finished agent and enqueues a job.
 func ResumeAfterApproval(ctx context.Context, store *storage.AgentsStore, jobs *storage.BackgroundJobs, userID, runID, note string) (storage.AgentRun, error) {
 	if store == nil || !store.Enabled {
 		return storage.AgentRun{}, fmt.Errorf("agents_disabled")
@@ -177,7 +177,13 @@ func ResumeAfterApproval(ctx context.Context, store *storage.AgentsStore, jobs *
 	if err != nil {
 		return storage.AgentRun{}, err
 	}
-	if run.Status != storage.AgentStatusWaitingForUser && run.Status != storage.AgentStatusQueued {
+	switch run.Status {
+	case storage.AgentStatusWaitingForUser, storage.AgentStatusQueued, storage.AgentStatusSucceeded, storage.AgentStatusFailed:
+		// ok
+	case storage.AgentStatusRunning:
+		// Already running; redirect_pending will be picked up mid-loop.
+		return run, nil
+	default:
 		return storage.AgentRun{}, fmt.Errorf("run_not_resumable")
 	}
 	if strings.TrimSpace(note) != "" {

@@ -157,7 +157,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := chi.URLParam(r, "id")
-	run, err := h.Store.SetRedirect(r.Context(), userID, runID, body.Message)
+	msg := strings.TrimSpace(body.Message)
+	run, err := h.Store.SetRedirect(r.Context(), userID, runID, msg)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not_found") {
@@ -166,8 +167,9 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": "redirect_failed", "message": err.Error()})
 		return
 	}
-	// If waiting, resume so redirect is consumed.
-	if run.Status == storage.AgentStatusWaitingForUser {
+	// Resume paused/finished runs so the reply is consumed by the harness.
+	switch run.Status {
+	case storage.AgentStatusWaitingForUser, storage.AgentStatusSucceeded, storage.AgentStatusFailed, storage.AgentStatusQueued:
 		run, err = ResumeAfterApproval(r.Context(), h.Store, h.Jobs, userID, runID, "")
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "resume_failed", "message": err.Error()})

@@ -189,6 +189,20 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 			}); err != nil {
 				return err
 			}
+			if looksLikeClarifyingQuestion(content) {
+				payload := map[string]any{
+					"kind":     "ask_user",
+					"question": content,
+					"summary":  content,
+					"plan":     plan,
+				}
+				seq++
+				if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepApprovalRequest, payload); err != nil {
+					return err
+				}
+				_, err := h.Store.WaitForUser(runCtx, run.UserID, run.ID, payload)
+				return err
+			}
 			return h.succeed(runCtx, run, map[string]any{
 				"summary": content,
 				"plan":    plan,
@@ -222,8 +236,31 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				return err
 			}
 
-			if name == "request_approval" {
-				payload := map[string]any{"tool": name, "args": jsonRawOrString(args)}
+			if name == "request_approval" || name == "ask_user" {
+				argsMap := map[string]any{}
+				if m, ok := jsonRawOrString(args).(map[string]any); ok {
+					argsMap = m
+				}
+				question := strings.TrimSpace(fmt.Sprint(argsMap["question"]))
+				if question == "" || question == "<nil>" {
+					question = strings.TrimSpace(fmt.Sprint(argsMap["summary"]))
+				}
+				if question == "" || question == "<nil>" {
+					question = strings.TrimSpace(meta.Content)
+				}
+				if question == "" {
+					question = "Donna needs your input to continue."
+				}
+				payload := map[string]any{
+					"kind":     name,
+					"tool":     name,
+					"question": question,
+					"summary":  question,
+					"args":     argsMap,
+				}
+				if ctx := strings.TrimSpace(fmt.Sprint(argsMap["context"])); ctx != "" && ctx != "<nil>" {
+					payload["context"] = ctx
+				}
 				seq++
 				if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepApprovalRequest, payload); err != nil {
 					return err
@@ -363,9 +400,56 @@ Rules:
 - Pursue the user's goal thoroughly using tools. Do not ask them to keep the app open.
 - Prefer memory_search / search_notes before external fetch when the answer may be personal.
 - Keep a short todo plan via the todo tool for multi-step goals.
+- When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply box after ask_user.
 - When you need irreversible approval (pay, book, send), call request_approval and stop.
 - When the goal is complete, reply with a clear final summary and no further tool calls.
 - Never invent confirmations, bookings, or private facts not grounded in tool results.`)
+}
+
+func looksLikeClarifyingQuestion(content string) bool {
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	// Short confirmatory answers are not asks.
+	if len(s) < 12 {
+		return false
+	}
+	cues := []string{
+		"could you",
+		"can you",
+		"would you",
+		"please clarify",
+		"please confirm",
+		"please provide",
+		"please tell",
+		"i need to know",
+		"i need more",
+		"which one",
+		"what date",
+		"what time",
+		"which airport",
+		"do you want",
+		"do you prefer",
+		"let me know",
+		"reply with",
+		"need your",
+		"before i continue",
+		"before i proceed",
+		"to proceed",
+		"to continue",
+	}
+	for _, c := range cues {
+		if strings.Contains(lower, c) {
+			return true
+		}
+	}
+	// Ends with a question and mentions needing input-ish shape.
+	if strings.HasSuffix(s, "?") && (strings.Contains(lower, "you") || strings.Contains(lower, "which") || strings.Contains(lower, "what") || strings.Contains(lower, "when") || strings.Contains(lower, "where")) {
+		return true
+	}
+	return false
 }
 
 func compressIfNeeded(messages []providers.ChatMessage, goal string) []providers.ChatMessage {

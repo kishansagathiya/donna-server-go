@@ -141,8 +141,12 @@ func (m *memRunStore) Patch(ctx context.Context, userID, runID string, patch map
 			r.Error = &s
 		}
 	}
-	if v, ok := patch["finished_at"].(string); ok {
-		r.FinishedAt = &v
+	if v, ok := patch["finished_at"]; ok {
+		if v == nil {
+			r.FinishedAt = nil
+		} else if s, ok := v.(string); ok {
+			r.FinishedAt = &s
+		}
 	}
 	return *r, nil
 }
@@ -202,8 +206,10 @@ func (m *memRunStore) Finish(ctx context.Context, userID, runID, status string, 
 func (m *memRunStore) WaitForUser(ctx context.Context, userID, runID string, approvalPayload map[string]any) (storage.AgentRun, error) {
 	raw, _ := json.Marshal(approvalPayload)
 	return m.Patch(ctx, userID, runID, map[string]any{
-		"status": storage.AgentStatusWaitingForUser,
-		"result": json.RawMessage(raw),
+		"status":      storage.AgentStatusWaitingForUser,
+		"result":      json.RawMessage(raw),
+		"finished_at": nil,
+		"error":       nil,
 	})
 }
 
@@ -243,16 +249,106 @@ func TestHarnessFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestHarnessAskUserPauses(t *testing.T) {
+	run := storage.AgentRun{
+		ID:             "run-ask",
+		UserID:         "user-1",
+		Goal:           "Book flight",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
+		MemorySnapshot: json.RawMessage(`{}`),
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
+	}
+	store := newMemRunStore(run)
+	args, _ := json.Marshal(map[string]any{"question": "Which airport — SFO or SJC?"})
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{
+			Content: "Need your preference.",
+			ToolCalls: []providers.ToolCall{{
+				ID:       "call-ask",
+				Type:     "function",
+				Function: providers.ToolFunction{Name: "ask_user", Arguments: string(args)},
+			}},
+		},
+	}}
+	reg := NewRegistry()
+	reg.Register(todoTool())
+	reg.Register(askUserTool())
+	h := &Harness{
+		Store:    store,
+		LLM:      llm,
+		Registry: reg,
+		WorkerID: "test",
+		Budgets:  Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+	}
+	if err := h.Run(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(context.Background(), "user-1", "run-ask")
+	if got.Status != storage.AgentStatusWaitingForUser {
+		t.Fatalf("status=%s", got.Status)
+	}
+	if !strings.Contains(string(got.Result), "SFO or SJC") {
+		t.Fatalf("result=%s", string(got.Result))
+	}
+}
+
+func TestLooksLikeClarifyingQuestion(t *testing.T) {
+	if !looksLikeClarifyingQuestion("Which airport do you prefer — SFO or SJC?") {
+		t.Fatal("expected question")
+	}
+	if !looksLikeClarifyingQuestion("I need more details before I continue. Could you share the travel dates?") {
+		t.Fatal("expected clarifying cue")
+	}
+	if looksLikeClarifyingQuestion("Found three matching notes about Lisbon.") {
+		t.Fatal("should not treat summary as question")
+	}
+}
+
+func TestHarnessClarifyingFinalPauses(t *testing.T) {
+	run := storage.AgentRun{
+		ID:             "run-q",
+		UserID:         "user-1",
+		Goal:           "Book flight",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
+		MemorySnapshot: json.RawMessage(`{}`),
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
+	}
+	store := newMemRunStore(run)
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{Content: "Which dates should I search for the flight?"},
+	}}
+	reg := NewRegistry()
+	reg.Register(todoTool())
+	h := &Harness{
+		Store:    store,
+		LLM:      llm,
+		Registry: reg,
+		WorkerID: "test",
+		Budgets:  Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+	}
+	if err := h.Run(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(context.Background(), "user-1", "run-q")
+	if got.Status != storage.AgentStatusWaitingForUser {
+		t.Fatalf("status=%s result=%s", got.Status, string(got.Result))
+	}
+}
+
 func TestHarnessRequestApprovalPauses(t *testing.T) {
 	run := storage.AgentRun{
-		ID:            "run-2",
-		UserID:        "user-1",
-		Goal:          "Book flight",
-		Status:        storage.AgentStatusQueued,
-		Plan:          json.RawMessage(`[]`),
+		ID:             "run-2",
+		UserID:         "user-1",
+		Goal:           "Book flight",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
 		MemorySnapshot: json.RawMessage(`{}`),
-		MaxSteps:      5,
-		ToolAllowlist: []string{"orchestration"},
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
 	args, _ := json.Marshal(map[string]any{"kind": "book_flight", "summary": "SFO $499"})

@@ -14,6 +14,7 @@ import (
 func DefaultToolsets(mem MemorySearcher, notes NoteSearcher) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
+	reg.Register(askUserTool())
 	reg.Register(requestApprovalTool())
 	if mem != nil {
 		reg.Register(memorySearchTool(mem))
@@ -66,6 +67,36 @@ func todoTool() RegisteredTool {
 			}
 			raw, _ := json.Marshal(args.Items)
 			return ToolResult{Content: "Plan updated: " + string(raw), Meta: map[string]any{"plan": args.Items}}, nil
+		},
+	}
+}
+
+func askUserTool() RegisteredTool {
+	return RegisteredTool{
+		Toolset: "orchestration",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "ask_user",
+				Description: "Pause and ask the user a clarifying question. Use when you cannot proceed without their answer. Do not ask in plain text and stop — call this tool so they get a Reply box.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"question": map[string]any{
+							"type":        "string",
+							"description": "Clear question for the user",
+						},
+						"context": map[string]any{
+							"type":        "string",
+							"description": "Optional short context for why you need this",
+						},
+					},
+					"required": []string{"question"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			return ToolResult{Content: "Waiting for user reply."}, nil
 		},
 	}
 }

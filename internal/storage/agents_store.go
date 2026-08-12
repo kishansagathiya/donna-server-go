@@ -301,8 +301,10 @@ func (s *AgentsStore) SetRedirect(ctx context.Context, userID, runID, message st
 		return AgentRun{}, err
 	}
 	switch run.Status {
-	case AgentStatusQueued, AgentStatusRunning, AgentStatusWaitingForUser:
-		// ok
+	case AgentStatusQueued, AgentStatusRunning, AgentStatusWaitingForUser, AgentStatusSucceeded, AgentStatusFailed:
+		// ok — reply/continue allowed even after a clarifying stop
+	case AgentStatusCancelled, AgentStatusExpired:
+		return AgentRun{}, fmt.Errorf("run_not_redirectable")
 	default:
 		return AgentRun{}, fmt.Errorf("run_not_redirectable")
 	}
@@ -353,12 +355,21 @@ func (s *AgentsStore) Finish(ctx context.Context, userID, runID, status string, 
 }
 
 func (s *AgentsStore) WaitForUser(ctx context.Context, userID, runID string, approvalPayload map[string]any) (AgentRun, error) {
-	return s.Patch(ctx, userID, runID, map[string]any{
+	patch := map[string]any{
 		"status":      AgentStatusWaitingForUser,
 		"lease_owner": nil,
 		"lease_until": nil,
-		"result":      approvalPayload,
-	})
+		"finished_at": nil,
+		"error":       nil,
+	}
+	if approvalPayload != nil {
+		raw, err := json.Marshal(approvalPayload)
+		if err != nil {
+			return AgentRun{}, err
+		}
+		patch["result"] = json.RawMessage(raw)
+	}
+	return s.Patch(ctx, userID, runID, patch)
 }
 
 func (s *AgentsStore) Requeue(ctx context.Context, userID, runID string) (AgentRun, error) {
