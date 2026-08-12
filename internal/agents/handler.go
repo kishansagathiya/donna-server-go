@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -29,18 +30,25 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Goal     string  `json:"goal"`
-		IntentID *string `json:"intent_id"`
-		MaxSteps int     `json:"max_steps"`
+		Goal        string               `json:"goal"`
+		IntentID    *string              `json:"intent_id"`
+		MaxSteps    int                  `json:"max_steps"`
+		Attachments []chat.ChatAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
+	grounded, err := chat.GroundChatTurn(body.Goal, body.Attachments)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_attachments", "message": err.Error()})
+		return
+	}
 	run, err := h.Spawner.Spawn(r.Context(), userID, SpawnInput{
-		Goal:     body.Goal,
-		IntentID: body.IntentID,
-		MaxSteps: body.MaxSteps,
+		Goal:         grounded.DisplayMessage,
+		GroundedGoal: grounded.GroundedMessage,
+		IntentID:     body.IntentID,
+		MaxSteps:     body.MaxSteps,
 	})
 	if err != nil {
 		status := http.StatusBadRequest
@@ -172,14 +180,20 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Message string `json:"message"`
+		Message     string                `json:"message"`
+		Attachments []chat.ChatAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
 	runID := chi.URLParam(r, "id")
-	msg := strings.TrimSpace(body.Message)
+	grounded, err := chat.GroundChatTurn(body.Message, body.Attachments)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_attachments", "message": err.Error()})
+		return
+	}
+	msg := strings.TrimSpace(grounded.GroundedMessage)
 	run, err := h.Store.SetRedirect(r.Context(), userID, runID, msg)
 	if err != nil {
 		status := http.StatusBadRequest

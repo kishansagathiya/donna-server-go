@@ -332,8 +332,21 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 		sys = defaultSystemPrompt()
 	}
 	memBlock := ""
-	if len(run.MemorySnapshot) > 0 && string(run.MemorySnapshot) != "{}" {
-		memBlock = "\n\nMemory snapshot:\n" + string(run.MemorySnapshot)
+	groundedGoal := run.Goal
+	if len(run.MemorySnapshot) > 0 && string(run.MemorySnapshot) != "{}" && string(run.MemorySnapshot) != "null" {
+		var snap map[string]any
+		if err := json.Unmarshal(run.MemorySnapshot, &snap); err == nil {
+			if g, ok := snap["grounded_goal"].(string); ok && strings.TrimSpace(g) != "" {
+				groundedGoal = strings.TrimSpace(g)
+			}
+			// Keep hits in the system prompt without dumping grounded_goal twice.
+			if hits, ok := snap["hits"]; ok {
+				rawHits, _ := json.Marshal(map[string]any{"hits": hits})
+				memBlock = "\n\nMemory snapshot:\n" + string(rawHits)
+			}
+		} else {
+			memBlock = "\n\nMemory snapshot:\n" + string(run.MemorySnapshot)
+		}
 	}
 	var plan []TodoItem
 	_ = json.Unmarshal(run.Plan, &plan)
@@ -351,7 +364,7 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 
 	messages := []providers.ChatMessage{
 		{Role: "system", Content: sys + memBlock},
-		{Role: "user", Content: "Goal: " + run.Goal},
+		{Role: "user", Content: "Goal: " + groundedGoal},
 	}
 
 	// Rebuild a compact transcript from prior steps for resume.

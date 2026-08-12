@@ -32,6 +32,26 @@ type groundedTurn struct {
 	Labels          []string
 }
 
+// GroundedTurn is the exported grounding result for other packages (e.g. agents).
+type GroundedTurn struct {
+	DisplayMessage  string
+	GroundedMessage string
+	Labels          []string
+}
+
+// GroundChatTurn grounds a user message plus optional attachments into LLM-facing text.
+func GroundChatTurn(message string, attachments []ChatAttachment) (GroundedTurn, error) {
+	g, err := groundChatTurn(message, attachments)
+	if err != nil {
+		return GroundedTurn{}, err
+	}
+	return GroundedTurn{
+		DisplayMessage:  g.DisplayMessage,
+		GroundedMessage: g.GroundedMessage,
+		Labels:          g.Labels,
+	}, nil
+}
+
 func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn, error) {
 	message = strings.TrimSpace(message)
 	if len(attachments) > maxChatAttachments {

@@ -70,6 +70,7 @@ type Spawner struct {
 
 type SpawnInput struct {
 	Goal          string
+	GroundedGoal  string // optional LLM-facing goal (attachments grounded); falls back to Goal
 	IntentID      *string
 	ToolAllowlist []string
 	MaxSteps      int
@@ -83,12 +84,19 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	if goal == "" {
 		return storage.AgentRun{}, fmt.Errorf("goal_required")
 	}
+	grounded := strings.TrimSpace(in.GroundedGoal)
+	if grounded == "" {
+		grounded = goal
+	}
 	allow := in.ToolAllowlist
 	if len(allow) == 0 {
 		allow = []string{"orchestration", "memory", "web"}
 	}
 
 	snapshot := map[string]any{}
+	if grounded != goal {
+		snapshot["grounded_goal"] = grounded
+	}
 	if s.Mem != nil {
 		hits, err := s.Mem.Search(ctx, userID, goal, 6)
 		if err != nil {
