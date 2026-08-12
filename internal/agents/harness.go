@@ -196,6 +196,9 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 					"summary":  content,
 					"plan":     plan,
 				}
+				if opts := extractOptionsFromText(content); len(opts) > 0 {
+					payload["options"] = opts
+				}
 				seq++
 				if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepApprovalRequest, payload); err != nil {
 					return err
@@ -260,6 +263,12 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				}
 				if ctx := strings.TrimSpace(fmt.Sprint(argsMap["context"])); ctx != "" && ctx != "<nil>" {
 					payload["context"] = ctx
+				}
+				if opts := normalizeAskOptions(argsMap["options"]); len(opts) > 0 {
+					payload["options"] = opts
+				}
+				if allowMulti, ok := argsMap["allow_multiple"].(bool); ok && allowMulti {
+					payload["allow_multiple"] = true
 				}
 				seq++
 				if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepApprovalRequest, payload); err != nil {
@@ -400,10 +409,90 @@ Rules:
 - Pursue the user's goal thoroughly using tools. Do not ask them to keep the app open.
 - Prefer memory_search / search_notes before external fetch when the answer may be personal.
 - Keep a short todo plan via the todo tool for multi-step goals.
-- When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply box after ask_user.
+- When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply UI after ask_user.
+- Whenever the answer is one of a few discrete choices (airports, dates, yes/no, airlines, seat prefs, which note/photo), include an options array with short labels. Set allow_multiple true only when they may pick more than one. Prefer taps over typing.
 - When you need irreversible approval (pay, book, send), call request_approval and stop.
 - When the goal is complete, reply with a clear final summary and no further tool calls.
 - Never invent confirmations, bookings, or private facts not grounded in tool results.`)
+}
+
+// normalizeAskOptions coerces tool args into [{id,label}, ...].
+func normalizeAskOptions(raw any) []map[string]string {
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(arr))
+	for i, item := range arr {
+		switch v := item.(type) {
+		case string:
+			label := strings.TrimSpace(v)
+			if label == "" {
+				continue
+			}
+			out = append(out, map[string]string{
+				"id":    fmt.Sprintf("opt_%d", i+1),
+				"label": label,
+			})
+		case map[string]any:
+			label := strings.TrimSpace(fmt.Sprint(v["label"]))
+			if label == "" || label == "<nil>" {
+				label = strings.TrimSpace(fmt.Sprint(v["text"]))
+			}
+			if label == "" || label == "<nil>" {
+				continue
+			}
+			id := strings.TrimSpace(fmt.Sprint(v["id"]))
+			if id == "" || id == "<nil>" {
+				id = fmt.Sprintf("opt_%d", i+1)
+			}
+			out = append(out, map[string]string{"id": id, "label": label})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// extractOptionsFromText pulls simple list choices from a clarifying question.
+func extractOptionsFromText(content string) []map[string]string {
+	lines := strings.Split(content, "\n")
+	var out []map[string]string
+	for _, line := range lines {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		// "- label", "* label", "1. label", "1) label"
+		label := ""
+		switch {
+		case strings.HasPrefix(s, "- "), strings.HasPrefix(s, "* "):
+			label = strings.TrimSpace(s[2:])
+		default:
+			i := 0
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
+			}
+			if i > 0 && i < len(s) && (s[i] == '.' || s[i] == ')') {
+				label = strings.TrimSpace(s[i+1:])
+			}
+		}
+		if label == "" || strings.HasSuffix(label, "?") && len(label) > 80 {
+			continue
+		}
+		if len(label) > 80 {
+			continue
+		}
+		out = append(out, map[string]string{
+			"id":    fmt.Sprintf("opt_%d", len(out)+1),
+			"label": label,
+		})
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
 
 func looksLikeClarifyingQuestion(content string) bool {

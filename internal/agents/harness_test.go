@@ -446,3 +446,38 @@ func (c *cancelAfterToolStore) Get(ctx context.Context, userID, runID string) (s
 	}
 	return run, nil
 }
+
+func TestNormalizeAskOptions(t *testing.T) {
+	got := normalizeAskOptions([]any{
+		map[string]any{"id": "sfo", "label": "San Francisco"},
+		"Direct flight",
+		map[string]any{"text": "One stop"},
+		map[string]any{"id": "skip", "label": "   "},
+	})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 options, got %#v", got)
+	}
+	if got[0]["id"] != "sfo" || got[0]["label"] != "San Francisco" {
+		t.Fatalf("first option: %#v", got[0])
+	}
+	if got[1]["id"] != "opt_2" || got[1]["label"] != "Direct flight" {
+		t.Fatalf("string option: %#v", got[1])
+	}
+	if got[2]["label"] != "One stop" {
+		t.Fatalf("text option: %#v", got[2])
+	}
+}
+
+func TestExtractOptionsFromText(t *testing.T) {
+	text := "Which airport?\n- SFO\n- OAK\n- SJC\n"
+	got := extractOptionsFromText(text)
+	if len(got) != 3 {
+		t.Fatalf("expected 3, got %#v", got)
+	}
+	if got[0]["label"] != "SFO" || got[2]["label"] != "SJC" {
+		t.Fatalf("labels: %#v", got)
+	}
+	if extractOptionsFromText("Just one\n- Only") != nil {
+		t.Fatal("need at least two list items")
+	}
+}

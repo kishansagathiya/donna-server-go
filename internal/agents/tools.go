@@ -78,17 +78,33 @@ func askUserTool() RegisteredTool {
 			Type: "function",
 			Function: providers.ToolFunctionSchema{
 				Name:        "ask_user",
-				Description: "Pause and ask the user a clarifying question. Use when you cannot proceed without their answer. Do not ask in plain text and stop — call this tool so they get a Reply box.",
+				Description: "Pause and ask the user a clarifying question. Prefer multiple-choice options so the user can tap choices instead of typing. Do not ask in plain text and stop — call this tool so they get a Reply UI.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"question": map[string]any{
 							"type":        "string",
-							"description": "Clear question for the user",
+							"description": "Clear question for the user (markdown ok)",
 						},
 						"context": map[string]any{
 							"type":        "string",
 							"description": "Optional short context for why you need this",
+						},
+						"options": map[string]any{
+							"type":        "array",
+							"description": "Choices the user can tap. Use whenever the answer is one of a few discrete options (airports, dates, yes/no, airlines, etc.).",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"id":    map[string]any{"type": "string", "description": "Stable id, e.g. sfo"},
+									"label": map[string]any{"type": "string", "description": "Button label shown to the user"},
+								},
+								"required": []string{"id", "label"},
+							},
+						},
+						"allow_multiple": map[string]any{
+							"type":        "boolean",
+							"description": "If true, user may select more than one option. Default false.",
 						},
 					},
 					"required": []string{"question"},
