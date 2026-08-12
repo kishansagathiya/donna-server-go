@@ -11,7 +11,8 @@ import (
 )
 
 // DefaultToolsets builds the Phase-1 agent tool registry.
-func DefaultToolsets(mem MemorySearcher, notes NoteSearcher) *Registry {
+// When browserURL is set (donna-browser sidecar), browse_page is registered.
+func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
 	reg.Register(askUserTool())
@@ -23,6 +24,9 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher) *Registry {
 		reg.Register(searchNotesTool(notes))
 	}
 	reg.Register(fetchURLTool())
+	if client := tools.NewBrowserClient(browserURL); client != nil {
+		reg.Register(browsePageTool(client))
+	}
 	reg.Register(sessionSearchTool())
 	return reg
 }
@@ -250,6 +254,28 @@ func fetchURLTool() RegisteredTool {
 				return ToolResult{}, err
 			}
 			return ToolResult{Content: res.Content, Meta: map[string]any{"host": res.Host}}, nil
+		},
+	}
+}
+
+func browsePageTool(client *tools.BrowserClient) RegisteredTool {
+	inner := tools.NewBrowsePageHandler(client)
+	return RegisteredTool{
+		Toolset:    "browser",
+		Definition: tools.BrowsePageDefinition(),
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			res, err := inner(ctx, argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			meta := map[string]any{}
+			if res.Host != "" {
+				meta["host"] = res.Host
+			}
+			if res.Phase != "" {
+				meta["phase"] = res.Phase
+			}
+			return ToolResult{Content: res.Content, Meta: meta}, nil
 		},
 	}
 }

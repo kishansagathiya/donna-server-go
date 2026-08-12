@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -18,6 +19,7 @@ func TestRegistryAllowlistByToolset(t *testing.T) {
 	reg.Register(todoTool())
 	reg.Register(requestApprovalTool())
 	reg.Register(fetchURLTool())
+	reg.Register(browsePageTool(tools.NewBrowserClient("http://127.0.0.1:9229")))
 	defs := reg.Definitions([]string{"orchestration"})
 	names := map[string]bool{}
 	for _, d := range defs {
@@ -26,8 +28,31 @@ func TestRegistryAllowlistByToolset(t *testing.T) {
 	if !names["todo"] || !names["request_approval"] {
 		t.Fatalf("expected orchestration tools, got %#v", names)
 	}
-	if names["fetch_url"] {
-		t.Fatal("fetch_url should be excluded by toolset allowlist")
+	if names["fetch_url"] || names["browse_page"] {
+		t.Fatal("web/browser tools should be excluded by orchestration allowlist")
+	}
+
+	webDefs := reg.Definitions([]string{"web", "browser"})
+	webNames := map[string]bool{}
+	for _, d := range webDefs {
+		webNames[d.Function.Name] = true
+	}
+	if !webNames["fetch_url"] || !webNames["browse_page"] {
+		t.Fatalf("expected web+browser tools, got %#v", webNames)
+	}
+}
+
+func TestDefaultToolsetsRegistersBrowseWhenConfigured(t *testing.T) {
+	without := DefaultToolsets(nil, nil, "")
+	with := DefaultToolsets(nil, nil, "http://127.0.0.1:9229")
+	if _, ok := without.Get("browse_page"); ok {
+		t.Fatal("browse_page must not register without browser URL")
+	}
+	if _, ok := with.Get("browse_page"); !ok {
+		t.Fatal("browse_page must register when browser URL is set")
+	}
+	if _, ok := with.Get("fetch_url"); !ok {
+		t.Fatal("fetch_url should always register")
 	}
 }
 

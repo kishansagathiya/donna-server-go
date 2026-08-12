@@ -147,7 +147,13 @@ func main() {
 		MinScore:  cfg.MemoryMinScore,
 	}
 	notesBridge := &agents.NotesBridge{Notes: notesStore}
-	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge)
+	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL)
+	if cfg.CloudAgentsEnabled {
+		log.Print("cloud agents tools", map[string]any{
+			"count":      agentRegistry.Len(),
+			"browserUrl": cfg.BrowserURL != "",
+		})
+	}
 	agentHarness := &agents.Harness{
 		Store:    agentsStore,
 		LLM:      llm,

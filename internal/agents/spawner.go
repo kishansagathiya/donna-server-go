@@ -90,7 +90,7 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	}
 	allow := in.ToolAllowlist
 	if len(allow) == 0 {
-		allow = []string{"orchestration", "memory", "web"}
+		allow = []string{"orchestration", "memory", "web", "browser"}
 	}
 
 	snapshot := map[string]any{}
