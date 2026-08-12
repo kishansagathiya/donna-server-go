@@ -146,7 +146,10 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 		if err != nil {
 			return err
 		}
-		if fresh.Status == storage.AgentStatusCancelled {
+		if fresh.Status == storage.AgentStatusCancelled ||
+			fresh.Status == storage.AgentStatusSucceeded ||
+			fresh.Status == storage.AgentStatusFailed ||
+			fresh.Status == storage.AgentStatusExpired {
 			return nil
 		}
 		if fresh.RedirectPending != nil && strings.TrimSpace(*fresh.RedirectPending) != "" {

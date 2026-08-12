@@ -330,6 +330,51 @@ func (s *AgentsStore) Cancel(ctx context.Context, userID, runID string) (AgentRu
 	})
 }
 
+// MarkFinished closes an open run as succeeded without continuing the agent loop.
+// Use when the user is done (e.g. declining to answer a clarifying question).
+func (s *AgentsStore) MarkFinished(ctx context.Context, userID, runID string) (AgentRun, error) {
+	run, err := s.Get(ctx, userID, runID)
+	if err != nil {
+		return AgentRun{}, err
+	}
+	switch run.Status {
+	case AgentStatusSucceeded, AgentStatusFailed, AgentStatusCancelled, AgentStatusExpired:
+		return run, nil
+	case AgentStatusQueued, AgentStatusRunning, AgentStatusWaitingForUser:
+		// ok
+	default:
+		return AgentRun{}, fmt.Errorf("run_not_finishable")
+	}
+
+	result := MergeUserFinishedResult(run.Result)
+	seq := run.StepCount + 1
+	if _, err := s.AppendStep(ctx, userID, runID, seq, AgentStepStatus, map[string]any{
+		"text": "Marked finished by user.",
+		"kind": "user_finished",
+	}); err != nil {
+		return AgentRun{}, err
+	}
+	return s.Finish(ctx, userID, runID, AgentStatusSucceeded, result, "")
+}
+
+// MergeUserFinishedResult keeps any prior result (e.g. a clarifying question) and
+// records that the user closed the run without continuing.
+func MergeUserFinishedResult(existing json.RawMessage) map[string]any {
+	out := map[string]any{}
+	if len(existing) > 0 && string(existing) != "null" {
+		_ = json.Unmarshal(existing, &out)
+	}
+	out["closed_by_user"] = true
+	if summary, _ := out["summary"].(string); strings.TrimSpace(summary) == "" {
+		if q, _ := out["question"].(string); strings.TrimSpace(q) != "" {
+			out["summary"] = strings.TrimSpace(q)
+		} else {
+			out["summary"] = "Marked finished by user."
+		}
+	}
+	return out
+}
+
 func (s *AgentsStore) Finish(ctx context.Context, userID, runID, status string, result map[string]any, errText string) (AgentRun, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	patch := map[string]any{

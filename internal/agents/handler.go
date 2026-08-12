@@ -139,6 +139,28 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+func (h *Handler) Finish(w http.ResponseWriter, r *http.Request) {
+	userID, ok := appauth.UserIDFromContext(r.Context())
+	if !ok || userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
+		return
+	}
+	if h.Store == nil || !h.Store.Enabled {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agents_disabled"})
+		return
+	}
+	run, err := h.Store.MarkFinished(r.Context(), userID, chi.URLParam(r, "id"))
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not_found") {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "finish_failed", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
 func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	userID, ok := appauth.UserIDFromContext(r.Context())
 	if !ok || userID == "" {
@@ -220,6 +242,7 @@ func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler
 		r.Get("/{id}", h.Get)
 		r.Get("/{id}/steps", h.ListSteps)
 		r.Post("/{id}/cancel", h.Cancel)
+		r.Post("/{id}/finish", h.Finish)
 		r.Post("/{id}/redirect", h.Redirect)
 	})
 }
