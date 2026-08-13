@@ -137,7 +137,7 @@ func Load() (*Config, error) {
 	}
 	agentModel := strings.TrimSpace(os.Getenv("DONNA_AGENT_MODEL"))
 	if agentModel == "" {
-		agentModel = "deepseek/deepseek-v4-pro-0813"
+		agentModel = "z-ai/glm-5.2"
 	}
 	llmModels := parseModelList(os.Getenv("DONNA_LLM_MODELS"))
 	if !containsString(llmModels, llmModel) {

@@ -30,8 +30,8 @@ func TestLoadDefaultsAgentModel(t *testing.T) {
 	if cfg.LLMModel != "z-ai/glm-5.2" {
 		t.Fatalf("LLMModel = %q, want z-ai/glm-5.2", cfg.LLMModel)
 	}
-	if cfg.AgentModel != "deepseek/deepseek-v4-pro-0813" {
-		t.Fatalf("AgentModel = %q, want deepseek/deepseek-v4-pro-0813", cfg.AgentModel)
+	if cfg.AgentModel != "z-ai/glm-5.2" {
+		t.Fatalf("AgentModel = %q, want z-ai/glm-5.2", cfg.AgentModel)
 	}
 }
 
