@@ -14,9 +14,10 @@ import (
 )
 
 type Handler struct {
-	Store   *storage.AgentsStore
-	Spawner *Spawner
-	Jobs    *storage.BackgroundJobs
+	Store      *storage.AgentsStore
+	Spawner    *Spawner
+	Jobs       *storage.BackgroundJobs
+	WebAppBase string
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -30,9 +31,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Goal        string               `json:"goal"`
-		IntentID    *string              `json:"intent_id"`
-		MaxSteps    int                  `json:"max_steps"`
+		Goal        string                `json:"goal"`
+		IntentID    *string               `json:"intent_id"`
+		MaxSteps    int                   `json:"max_steps"`
 		Attachments []chat.ChatAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -249,10 +250,15 @@ func queryOffset(r *http.Request) int {
 }
 
 func RegisterRoutes(r chi.Router, authMiddleware func(http.Handler) http.Handler, h *Handler) {
+	r.Get("/share/agent/{token}", h.GetPublicShare)
+
 	r.Route("/agent-runs", func(r chi.Router) {
 		r.Use(authMiddleware)
 		r.Get("/", h.List)
 		r.Post("/", h.Create)
+		r.Get("/{id}/share", h.GetShare)
+		r.Post("/{id}/share", h.CreateShare)
+		r.Delete("/{id}/share", h.RevokeShare)
 		r.Get("/{id}", h.Get)
 		r.Get("/{id}/steps", h.ListSteps)
 		r.Post("/{id}/cancel", h.Cancel)

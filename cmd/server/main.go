@@ -348,7 +348,7 @@ func main() {
 	actions.RegisterRoutes(r, authMiddleware, actionsHandler)
 
 	if cfg.CloudAgentsEnabled {
-		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore}
+		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase}
 		agents.RegisterRoutes(r, authMiddleware, agentsHandler)
 		log.Print("cloud agents: /agent-runs enabled", map[string]any{"tools": agentRegistry.Len()})
 	}
