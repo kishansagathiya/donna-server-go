@@ -18,12 +18,12 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/agents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/cafe"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/google"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
-	"github.com/kishansagathiya/donna/donna-server-go/internal/cafe"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/errreport"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
@@ -156,7 +156,7 @@ func main() {
 	}
 	agentHarness := &agents.Harness{
 		Store:    agentsStore,
-		LLM:      llm,
+		LLM:      llm.WithModel(cfg.AgentModel),
 		Registry: agentRegistry,
 		WorkerID: "donna-server",
 	}
@@ -464,6 +464,7 @@ func main() {
 	log.Print("share: GET /share/{token} (public)", nil)
 	log.Print("account: GET/PATCH/DELETE /account, GET /account/export", nil)
 	log.Print(fmt.Sprintf("llm model: %s", cfg.LLMModel), nil)
+	log.Print(fmt.Sprintf("agent model: %s", cfg.AgentModel), nil)
 	log.Print(fmt.Sprintf("vision model: %s", cfg.VisionModel), nil)
 	log.Print(fmt.Sprintf("stt model: %s", cfg.STTModel), nil)
 	log.Print(fmt.Sprintf("voice (simulator): ws://127.0.0.1:%d/voice", cfg.Port), nil)

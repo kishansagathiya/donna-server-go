@@ -24,16 +24,18 @@ type Config struct {
 	CartesiaAPIKey         string
 	ElevenLabsAPIKey       string
 	LLMModel               string
-	LLMFastModel           string
-	LLMModels              []string
-	AutoRouteEnabled       bool
-	VisionModel            string
-	STTModel               string
-	EmbeddingModel         string
-	SystemPrompt           string
-	MemoryMinScore         float64
-	MaxHistoryMessages     int
-	Personas               []string
+	// AgentModel is the OpenRouter slug for cloud agent runs. Chat uses LLMModel.
+	AgentModel         string
+	LLMFastModel       string
+	LLMModels          []string
+	AutoRouteEnabled   bool
+	VisionModel        string
+	STTModel           string
+	EmbeddingModel     string
+	SystemPrompt       string
+	MemoryMinScore     float64
+	MaxHistoryMessages int
+	Personas           []string
 	// BrowserURL is the donna-browser Playwright sidecar base URL (e.g. http://127.0.0.1:9229).
 	// When empty, browse_page is not registered; fetch_url still works.
 	BrowserURL string
@@ -132,6 +134,10 @@ func Load() (*Config, error) {
 	llmModel := strings.TrimSpace(os.Getenv("DONNA_LLM_MODEL"))
 	if llmModel == "" {
 		return nil, fmt.Errorf("missing required env var: DONNA_LLM_MODEL")
+	}
+	agentModel := strings.TrimSpace(os.Getenv("DONNA_AGENT_MODEL"))
+	if agentModel == "" {
+		agentModel = "deepseek/deepseek-v4-pro-0813"
 	}
 	llmModels := parseModelList(os.Getenv("DONNA_LLM_MODELS"))
 	if !containsString(llmModels, llmModel) {
@@ -252,51 +258,52 @@ func Load() (*Config, error) {
 	chatgptS3PathStyle := parseBool(os.Getenv("CHATGPT_IMPORT_S3_USE_PATH_STYLE"))
 
 	return &Config{
-		Host:                   host,
-		Port:                   port,
-		SupabaseURL:            supabaseURL,
-		SupabaseServiceRoleKey: supabaseServiceRoleKey,
-		JWTAudience:            jwtAudience,
-		RequireAuth:            supabaseURL != "",
-		PersistConversations:   supabaseURL != "" && supabaseServiceRoleKey != "",
-		PersistKnowledge:       supabaseURL != "" && supabaseServiceRoleKey != "",
-		OpenRouterAPIKey:       openRouterKey,
-		OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
-		CartesiaAPIKey:         os.Getenv("CARTESIA_API_KEY"),
-		ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
-		LLMModel:               llmModel,
-		LLMFastModel:           llmFastModel,
-		LLMModels:              llmModels,
-		AutoRouteEnabled:       autoRoute,
-		VisionModel:            visionModel,
-		STTModel:               sttModel,
-		EmbeddingModel:         embeddingModel,
-		SystemPrompt:           systemPrompt,
-		MemoryMinScore:         memoryMinScore,
-		MaxHistoryMessages:     maxHistoryMessages,
-		Personas:               personas,
-		BrowserURL:             browserURL,
-		ChatToolsEnabled:       chatToolsEnabled,
-		IntegrationsEnabled:     integrationsEnabled,
-		GranolaEnabled:          granolaEnabled,
-		GoogleEnabled:           googleEnabled,
-		GoogleOAuthClientID:     googleClientID,
-		GoogleOAuthClientSecret: googleClientSecret,
-		ConnectorEncryptionKey:  connectorKey,
-		PublicAPIBase:           publicAPIBase,
-		WebAppBase:              webAppBase,
-		NotesV2Feed:            notesV2Feed,
-		NotesV2SmartTagging:    notesV2SmartTagging,
-		MemoryV2Extraction:     memoryV2Extraction,
-		MemoryV2Retrieval:      memoryV2Retrieval,
-		BackgroundJobsEnabled:  backgroundJobsEnabled,
-		CloudAgentsEnabled:     cloudAgentsEnabled,
-		ErrorReportsEnabled:    errorReportsEnabled,
-		GitHubToken:            strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
-		GitHubIssueRepo:        githubIssueRepo,
-		GeminiAPIKey:           strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
-		LiveModel:              liveModel,
-		LiveVoiceName:          liveVoice,
+		Host:                           host,
+		Port:                           port,
+		SupabaseURL:                    supabaseURL,
+		SupabaseServiceRoleKey:         supabaseServiceRoleKey,
+		JWTAudience:                    jwtAudience,
+		RequireAuth:                    supabaseURL != "",
+		PersistConversations:           supabaseURL != "" && supabaseServiceRoleKey != "",
+		PersistKnowledge:               supabaseURL != "" && supabaseServiceRoleKey != "",
+		OpenRouterAPIKey:               openRouterKey,
+		OpenAIAPIKey:                   os.Getenv("OPENAI_API_KEY"),
+		CartesiaAPIKey:                 os.Getenv("CARTESIA_API_KEY"),
+		ElevenLabsAPIKey:               os.Getenv("ELEVENLABS_API_KEY"),
+		LLMModel:                       llmModel,
+		AgentModel:                     agentModel,
+		LLMFastModel:                   llmFastModel,
+		LLMModels:                      llmModels,
+		AutoRouteEnabled:               autoRoute,
+		VisionModel:                    visionModel,
+		STTModel:                       sttModel,
+		EmbeddingModel:                 embeddingModel,
+		SystemPrompt:                   systemPrompt,
+		MemoryMinScore:                 memoryMinScore,
+		MaxHistoryMessages:             maxHistoryMessages,
+		Personas:                       personas,
+		BrowserURL:                     browserURL,
+		ChatToolsEnabled:               chatToolsEnabled,
+		IntegrationsEnabled:            integrationsEnabled,
+		GranolaEnabled:                 granolaEnabled,
+		GoogleEnabled:                  googleEnabled,
+		GoogleOAuthClientID:            googleClientID,
+		GoogleOAuthClientSecret:        googleClientSecret,
+		ConnectorEncryptionKey:         connectorKey,
+		PublicAPIBase:                  publicAPIBase,
+		WebAppBase:                     webAppBase,
+		NotesV2Feed:                    notesV2Feed,
+		NotesV2SmartTagging:            notesV2SmartTagging,
+		MemoryV2Extraction:             memoryV2Extraction,
+		MemoryV2Retrieval:              memoryV2Retrieval,
+		BackgroundJobsEnabled:          backgroundJobsEnabled,
+		CloudAgentsEnabled:             cloudAgentsEnabled,
+		ErrorReportsEnabled:            errorReportsEnabled,
+		GitHubToken:                    strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		GitHubIssueRepo:                githubIssueRepo,
+		GeminiAPIKey:                   strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+		LiveModel:                      liveModel,
+		LiveVoiceName:                  liveVoice,
 		ChatGPTImportS3Bucket:          chatgptS3Bucket,
 		ChatGPTImportS3Endpoint:        chatgptS3Endpoint,
 		ChatGPTImportS3Region:          chatgptS3Region,

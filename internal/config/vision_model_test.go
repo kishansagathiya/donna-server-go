@@ -18,6 +18,37 @@ func TestLoadDefaultsVisionModel(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsAgentModel(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("DONNA_LLM_MODEL", "z-ai/glm-5.2")
+	t.Setenv("DONNA_AGENT_MODEL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.LLMModel != "z-ai/glm-5.2" {
+		t.Fatalf("LLMModel = %q, want z-ai/glm-5.2", cfg.LLMModel)
+	}
+	if cfg.AgentModel != "deepseek/deepseek-v4-pro-0813" {
+		t.Fatalf("AgentModel = %q, want deepseek/deepseek-v4-pro-0813", cfg.AgentModel)
+	}
+}
+
+func TestLoadRespectsAgentModelEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("DONNA_LLM_MODEL", "z-ai/glm-5.2")
+	t.Setenv("DONNA_AGENT_MODEL", "moonshotai/kimi-k3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.AgentModel != "moonshotai/kimi-k3" {
+		t.Fatalf("AgentModel = %q, want moonshotai/kimi-k3", cfg.AgentModel)
+	}
+}
+
 func TestLoadRespectsVisionModelEnv(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	t.Setenv("DONNA_LLM_MODEL", "deepseek/deepseek-v4-pro")
