@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxChatAttachments     = 5
+	maxChatAttachments     = 10
 	maxChatAttachmentBytes = 15 * 1024 * 1024
 	maxAttachmentTextChars = 50_000
 )
