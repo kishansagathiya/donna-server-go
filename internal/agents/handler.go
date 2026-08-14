@@ -40,7 +40,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	grounded, err := chat.GroundChatTurn(body.Goal, body.Attachments)
+	grounded, err := chat.GroundChatTurn(r.Context(), body.Goal, body.Attachments)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_attachments", "message": err.Error()})
 		return
@@ -189,7 +189,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := chi.URLParam(r, "id")
-	grounded, err := chat.GroundChatTurn(body.Message, body.Attachments)
+	grounded, err := chat.GroundChatTurn(r.Context(), body.Message, body.Attachments)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_attachments", "message": err.Error()})
 		return

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -64,8 +65,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBodyBytes)
 	var body chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if isRequestTooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error":   "payload_too_large",
+				"message": "This message is too large. Try fewer or smaller attachments.",
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "invalid_body",
 			"message": "Expected JSON body with message field",
@@ -89,7 +98,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grounded, err := groundChatTurn(body.Message, body.Attachments)
+	grounded, err := groundChatTurn(r.Context(), body.Message, body.Attachments)
 	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":   "invalid_attachments",
@@ -204,7 +213,7 @@ func (h *Handler) streamReply(
 		writePhase(phase, host)
 	}
 
-	grounded, err := groundChatTurn(body.Message, body.Attachments)
+	grounded, err := groundChatTurn(r.Context(), body.Message, body.Attachments)
 	if err != nil {
 		writeSSE("error", mustJSON(map[string]string{"message": err.Error()}))
 		return
@@ -480,6 +489,11 @@ func mustJSON(v any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+func isRequestTooLarge(err error) bool {
+	var maxBytes *http.MaxBytesError
+	return errors.As(err, &maxBytes)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

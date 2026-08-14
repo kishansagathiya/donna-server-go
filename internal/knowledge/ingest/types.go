@@ -1,5 +1,7 @@
 package ingest
 
+import "context"
+
 type AssetKind string
 
 const (
@@ -20,6 +22,7 @@ type ExtractedAsset struct {
 }
 
 type ExtractContext struct {
+	Ctx      context.Context
 	Buffer   []byte
 	Mime     string
 	Filename string

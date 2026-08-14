@@ -1,20 +1,24 @@
 package chat
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
 const (
-	maxChatAttachments     = 10
-	maxChatAttachmentBytes = 15 * 1024 * 1024
-	maxAttachmentTextChars = 50_000
+	maxChatAttachments         = 10
+	maxChatAttachmentBytes     = 15 * 1024 * 1024
+	maxAttachmentTextChars     = 50_000
+	maxParallelChatAttachments = 4
+	maxChatRequestBodyBytes    = 32 << 20
 )
 
 // ChatAttachment is an in-turn grounding payload (ephemeral; not knowledge ingest).
@@ -41,8 +45,11 @@ type GroundedTurn struct {
 }
 
 // GroundChatTurn grounds a user message plus optional attachments into LLM-facing text.
-func GroundChatTurn(message string, attachments []ChatAttachment) (GroundedTurn, error) {
-	g, err := groundChatTurn(message, attachments)
+func GroundChatTurn(ctx context.Context, message string, attachments []ChatAttachment) (GroundedTurn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	g, err := groundChatTurn(ctx, message, attachments)
 	if err != nil {
 		return GroundedTurn{}, err
 	}
@@ -53,10 +60,15 @@ func GroundChatTurn(message string, attachments []ChatAttachment) (GroundedTurn,
 	}, nil
 }
 
-func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn, error) {
+func groundChatTurn(ctx context.Context, message string, attachments []ChatAttachment) (groundedTurn, error) {
 	message = strings.TrimSpace(message)
 	if len(attachments) > maxChatAttachments {
 		return groundedTurn{}, fmt.Errorf("too many attachments (max %d)", maxChatAttachments)
+	}
+
+	extracted, err := extractAttachments(ctx, attachments)
+	if err != nil {
+		return groundedTurn{}, err
 	}
 
 	var (
@@ -65,15 +77,11 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 		captures []ingest.ExtractedAsset
 	)
 
-	for i, att := range attachments {
-		label, content, extracted, err := extractAttachment(att)
-		if err != nil {
-			return groundedTurn{}, fmt.Errorf("attachment %d: %w", i+1, err)
-		}
-		labels = append(labels, label)
-		blocks = append(blocks, fmt.Sprintf("Attached: %s\n\n%s", label, content))
-		if isPersistableCapture(extracted) {
-			captures = append(captures, extracted)
+	for _, item := range extracted {
+		labels = append(labels, item.label)
+		blocks = append(blocks, fmt.Sprintf("Attached: %s\n\n%s", item.label, item.content))
+		if isPersistableCapture(item.extracted) {
+			captures = append(captures, item.extracted)
 		}
 	}
 
@@ -190,21 +198,86 @@ func splitGroundedTranscript(message string) (display, grounded string, ok bool)
 	return "📎 " + strings.Join(labels, ", "), grounded, true
 }
 
-func extractAttachment(att ChatAttachment) (label, content string, extracted ingest.ExtractedAsset, err error) {
+type attachmentResult struct {
+	label     string
+	content   string
+	extracted ingest.ExtractedAsset
+}
+
+// extractOneAttachment is swapped in tests to prove parallel extraction.
+var extractOneAttachment = extractAttachment
+
+func extractAttachments(ctx context.Context, attachments []ChatAttachment) ([]attachmentResult, error) {
+	n := len(attachments)
+	if n == 0 {
+		return nil, nil
+	}
+	if n == 1 {
+		label, content, extracted, err := extractOneAttachment(ctx, attachments[0])
+		if err != nil {
+			return nil, fmt.Errorf("attachment 1: %w", err)
+		}
+		return []attachmentResult{{label: label, content: content, extracted: extracted}}, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	out := make([]attachmentResult, n)
+	errCh := make(chan error, 1)
+	sem := make(chan struct{}, maxParallelChatAttachments)
+	var wg sync.WaitGroup
+
+	for i, att := range attachments {
+		wg.Add(1)
+		go func(i int, att ChatAttachment) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			if ctx.Err() != nil {
+				return
+			}
+			label, content, extracted, err := extractOneAttachment(ctx, att)
+			if err != nil {
+				select {
+				case errCh <- fmt.Errorf("attachment %d: %w", i+1, err):
+					cancel()
+				default:
+				}
+				return
+			}
+			out[i] = attachmentResult{label: label, content: content, extracted: extracted}
+		}(i, att)
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		return nil, err
+	default:
+		return out, nil
+	}
+}
+
+func extractAttachment(ctx context.Context, att ChatAttachment) (label, content string, extracted ingest.ExtractedAsset, err error) {
 	kind := strings.ToLower(strings.TrimSpace(att.Kind))
 	switch kind {
 	case "url":
 		label, content, extracted, err = extractURLAttachment(att.URL)
 		return label, content, extracted, err
 	case "file", "image", "":
-		label, content, err = extractFileAttachment(att)
+		label, content, err = extractFileAttachment(ctx, att)
 		return label, content, extracted, err
 	default:
 		return "", "", extracted, fmt.Errorf("unsupported attachment kind %q", att.Kind)
 	}
 }
 
-func extractFileAttachment(att ChatAttachment) (label, content string, err error) {
+func extractFileAttachment(ctx context.Context, att ChatAttachment) (label, content string, err error) {
 	buf, err := decodeAttachmentBase64(att.DataBase64)
 	if err != nil {
 		return "", "", err
@@ -220,6 +293,10 @@ func extractFileAttachment(att ChatAttachment) (label, content string, err error
 	if filename == "" {
 		filename = "attachment"
 	}
+	mime := ingest.ResolveMime(buf, att.Mime, filename)
+	if strings.HasPrefix(mime, "image/") {
+		return extractChatImage(ctx, att.DataBase64, mime, filename)
+	}
 	extracted, err := ingest.DispatchFileExtraction(buf, att.Mime, filename)
 	if err != nil {
 		return "", "", err
@@ -229,6 +306,29 @@ func extractFileAttachment(att ChatAttachment) (label, content string, err error
 		return "", "", fmt.Errorf("no content extracted from %s", filename)
 	}
 	return filename, text, nil
+}
+
+func extractChatImage(ctx context.Context, rawBase64, mime, filename string) (label, content string, err error) {
+	desc, err := ingest.DescribeImage(ctx, ingest.ChatVisionPrompt, imageDataURL(mime, rawBase64))
+	if err != nil {
+		return "", "", err
+	}
+	text := clampAttachmentText(fmt.Sprintf("Image: %s\n\n%s", filename, desc))
+	if strings.TrimSpace(text) == "" {
+		return "", "", fmt.Errorf("no content extracted from %s", filename)
+	}
+	return filename, text, nil
+}
+
+func imageDataURL(mime, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "data:") {
+		return raw
+	}
+	if mime == "" {
+		mime = "image/jpeg"
+	}
+	return "data:" + mime + ";base64," + raw
 }
 
 func decodeAttachmentBase64(raw string) ([]byte, error) {

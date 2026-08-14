@@ -24,9 +24,21 @@ type Services struct {
 	LLM *providers.LLM
 }
 
-var fileExtractors []Extractor
+const (
+	visionCallTimeout     = 60 * time.Second
+	knowledgeVisionPrompt = "Describe this image in detail for a personal knowledge base. Include all visible text (OCR), people, objects, diagrams, and key information. Be factual and thorough."
+	// Chat attachments are ephemeral. Keep this short so 10-image turns
+	// do not spend minutes generating knowledge-base essays before the reply.
+	ChatVisionPrompt = "Describe this image for a chat assistant answering the user now. Include all visible text (OCR) and the key people, objects, and layout. Be factual and concise."
+)
+
+var (
+	fileExtractors []Extractor
+	visionLLM      *providers.LLM
+)
 
 func InitExtractors(services Services) {
+	visionLLM = services.LLM
 	fileExtractors = []Extractor{
 		{
 			Name: "plain_text", Priority: 10,
@@ -89,10 +101,7 @@ func InitExtractors(services Services) {
 			CanHandle: func(mime, _ string) bool { return strings.HasPrefix(mime, "image/") },
 			Extract: func(ctx ExtractContext) (ExtractedAsset, error) {
 				dataURL := fmt.Sprintf("data:%s;base64,%s", ctx.Mime, base64.StdEncoding.EncodeToString(ctx.Buffer))
-				desc, err := services.LLM.CompleteOnceVision(context.Background(),
-					"Describe this image in detail for a personal knowledge base. Include all visible text (OCR), people, objects, diagrams, and key information. Be factual and thorough.",
-					dataURL,
-				)
+				desc, err := DescribeImage(ctx.Ctx, knowledgeVisionPrompt, dataURL)
 				if err != nil {
 					return ExtractedAsset{}, err
 				}
@@ -124,6 +133,25 @@ func InitExtractors(services Services) {
 			},
 		},
 	}
+}
+
+// DescribeImage runs the vision model. A 60s timeout is applied when ctx has none.
+func DescribeImage(ctx context.Context, prompt, imageDataURL string) (string, error) {
+	if visionLLM == nil {
+		return "", fmt.Errorf("vision model is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, visionCallTimeout)
+		defer cancel()
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = knowledgeVisionPrompt
+	}
+	return visionLLM.CompleteOnceVision(ctx, prompt, imageDataURL)
 }
 
 func DispatchFileExtraction(buffer []byte, contentType, filename string) (ExtractedAsset, error) {
