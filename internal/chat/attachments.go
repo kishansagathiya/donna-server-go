@@ -30,6 +30,7 @@ type groundedTurn struct {
 	DisplayMessage  string
 	GroundedMessage string
 	Labels          []string
+	Captures        []ingest.ExtractedAsset
 }
 
 // GroundedTurn is the exported grounding result for other packages (e.g. agents).
@@ -59,28 +60,49 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 	}
 
 	var (
-		blocks []string
-		labels []string
+		blocks   []string
+		labels   []string
+		captures []ingest.ExtractedAsset
 	)
 
 	for i, att := range attachments {
-		label, content, err := extractAttachment(att)
+		label, content, extracted, err := extractAttachment(att)
 		if err != nil {
 			return groundedTurn{}, fmt.Errorf("attachment %d: %w", i+1, err)
 		}
 		labels = append(labels, label)
 		blocks = append(blocks, fmt.Sprintf("Attached: %s\n\n%s", label, content))
+		if isPersistableCapture(extracted) {
+			captures = append(captures, extracted)
+		}
 	}
 
-	// If the user pasted a bare URL with no explicit url attachment, fetch it.
+	// Fetch a bare URL, and always fetch Twitter/X status links so they can
+	// be saved into memory even when mixed with commentary.
 	if len(attachments) == 0 {
-		if u := loneURL(message); u != "" {
-			label, content, err := extractURLAttachment(u)
+		tweetURLs := ingest.FindTweetURLs(message)
+		if len(tweetURLs) > 0 {
+			for _, u := range tweetURLs {
+				label, content, extracted, err := extractURLAttachment(u)
+				if err != nil {
+					continue
+				}
+				labels = append(labels, label)
+				blocks = append(blocks, fmt.Sprintf("Attached: %s\n\n%s", label, content))
+				if isPersistableCapture(extracted) {
+					captures = append(captures, extracted)
+				}
+			}
+		} else if u := loneURL(message); u != "" {
+			label, content, extracted, err := extractURLAttachment(u)
 			if err != nil {
 				return groundedTurn{}, err
 			}
 			labels = append(labels, label)
 			blocks = append(blocks, fmt.Sprintf("Attached: %s\n\n%s", label, content))
+			if isPersistableCapture(extracted) {
+				captures = append(captures, extracted)
+			}
 		}
 	}
 
@@ -114,10 +136,14 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 	grounded := message
 	if len(blocks) > 0 {
 		joined := strings.Join(blocks, "\n\n---\n\n")
+		preamble := groundedAttachmentPreamble
+		if len(captures) > 0 {
+			preamble = groundedCapturePreamble
+		}
 		if grounded == "" {
-			grounded = groundedAttachmentPreamble + joined
+			grounded = preamble + joined
 		} else {
-			grounded = grounded + "\n\n" + groundedAttachmentPreamble + joined
+			grounded = grounded + "\n\n" + preamble + joined
 		}
 	}
 
@@ -125,10 +151,12 @@ func groundChatTurn(message string, attachments []ChatAttachment) (groundedTurn,
 		DisplayMessage:  display,
 		GroundedMessage: grounded,
 		Labels:          labels,
+		Captures:        captures,
 	}, nil
 }
 
 const groundedAttachmentPreamble = "The user shared the following attachment(s) for this turn only (not saved to long-term memory unless they ask):\n\n"
+const groundedCapturePreamble = "The user captured the following link(s) to save into memory:\n\n"
 
 func splitGroundedTranscript(message string) (display, grounded string, ok bool) {
 	grounded = strings.TrimSpace(message)
@@ -136,6 +164,9 @@ func splitGroundedTranscript(message string) (display, grounded string, ok bool)
 		return "", "", false
 	}
 	idx := strings.Index(grounded, "The user shared the following attachment(s) for this turn only")
+	if idx < 0 {
+		idx = strings.Index(grounded, "The user captured the following link(s) to save into memory")
+	}
 	if idx < 0 {
 		return "", "", false
 	}
@@ -159,15 +190,17 @@ func splitGroundedTranscript(message string) (display, grounded string, ok bool)
 	return "📎 " + strings.Join(labels, ", "), grounded, true
 }
 
-func extractAttachment(att ChatAttachment) (label, content string, err error) {
+func extractAttachment(att ChatAttachment) (label, content string, extracted ingest.ExtractedAsset, err error) {
 	kind := strings.ToLower(strings.TrimSpace(att.Kind))
 	switch kind {
 	case "url":
-		return extractURLAttachment(att.URL)
+		label, content, extracted, err = extractURLAttachment(att.URL)
+		return label, content, extracted, err
 	case "file", "image", "":
-		return extractFileAttachment(att)
+		label, content, err = extractFileAttachment(att)
+		return label, content, extracted, err
 	default:
-		return "", "", fmt.Errorf("unsupported attachment kind %q", att.Kind)
+		return "", "", extracted, fmt.Errorf("unsupported attachment kind %q", att.Kind)
 	}
 }
 
@@ -260,27 +293,31 @@ func toSaveTurnAttachments(attachments []ChatAttachment) []storage.SaveTurnAttac
 	return out
 }
 
-func extractURLAttachment(rawURL string) (label, content string, err error) {
+func extractURLAttachment(rawURL string) (label, content string, extracted ingest.ExtractedAsset, err error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return "", "", fmt.Errorf("url attachment requires url")
+		return "", "", extracted, fmt.Errorf("url attachment requires url")
 	}
 	if err := assertPublicHTTPURL(rawURL); err != nil {
-		return "", "", err
+		return "", "", extracted, err
 	}
-	extracted, err := ingest.ExtractURL(rawURL)
+	extracted, err = ingest.ExtractURL(rawURL)
 	if err != nil {
-		return "", "", err
+		return "", "", extracted, err
 	}
 	text := clampAttachmentText(extracted.Content)
 	if strings.TrimSpace(text) == "" {
-		return "", "", fmt.Errorf("no text content extracted from URL")
+		return "", "", extracted, fmt.Errorf("no text content extracted from URL")
 	}
 	label = extracted.Title
 	if label == "" {
 		label = rawURL
 	}
-	return label, text, nil
+	return label, text, extracted, nil
+}
+
+func isPersistableCapture(extracted ingest.ExtractedAsset) bool {
+	return strings.HasPrefix(extracted.Extractor, "twitter")
 }
 
 func clampAttachmentText(text string) string {

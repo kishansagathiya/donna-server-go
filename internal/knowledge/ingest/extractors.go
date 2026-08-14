@@ -75,7 +75,7 @@ func InitExtractors(services Services) {
 		{
 			Name: "pdf_parse", Priority: 30,
 			CanHandle: func(mime, _ string) bool { return mime == "application/pdf" },
-			Extract: extractPDF,
+			Extract:   extractPDF,
 		},
 		{
 			Name: "mammoth_docx", Priority: 35,
@@ -157,17 +157,61 @@ func ExtractURL(rawURL string) (ExtractedAsset, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return ExtractedAsset{}, fmt.Errorf("only HTTP/HTTPS URLs are supported")
 	}
+	if err := rejectPrivateURL(rawURL); err != nil {
+		return ExtractedAsset{}, err
+	}
+	if IsTweetURL(rawURL) {
+		return ExtractTweet(rawURL)
+	}
+
+	fetched, fetchErr := fetchPublicPage(rawURL)
+	if fetchErr == nil && IsTweetURL(fetched.SourceURL) {
+		return ExtractTweet(fetched.SourceURL)
+	}
+
+	pageText := fetched.Content
+	if i := strings.LastIndex(fetched.Content, "\n\n"); i >= 0 {
+		pageText = fetched.Content[i+2:]
+	}
+	incomplete := fetchErr != nil || fetchLooksIncomplete(pageText, len(pageText), true)
+	if incomplete && browseEnabled() && !IsTweetURL(rawURL) {
+		if browsed, err := browsePage(rawURL); err == nil {
+			return browsed, nil
+		}
+	}
+	if fetchErr != nil {
+		return ExtractedAsset{}, fetchErr
+	}
+	if strings.TrimSpace(pageText) == "" {
+		return ExtractedAsset{}, fmt.Errorf("no text content extracted from URL")
+	}
+	return fetched, nil
+}
+
+func fetchPublicPage(rawURL string) (ExtractedAsset, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ExtractedAsset{}, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	req.Header.Set("User-Agent", "DonnaKnowledgeBot/1.0")
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return ExtractedAsset{}, err
 	}
 	defer res.Body.Close()
+
+	finalURL := rawURL
+	if res.Request != nil && res.Request.URL != nil {
+		finalURL = res.Request.URL.String()
+	}
+	if IsTweetURL(finalURL) {
+		return ExtractedAsset{SourceURL: finalURL}, nil
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return ExtractedAsset{}, fmt.Errorf("failed to fetch URL (%d)", res.StatusCode)
 	}
@@ -186,17 +230,19 @@ func ExtractURL(rawURL string) (ExtractedAsset, error) {
 	if !isHTML {
 		content = ClampText(string(body))
 	}
-	if content == "" {
-		return ExtractedAsset{}, fmt.Errorf("no text content extracted from URL")
-	}
 
 	host := parsed.Host
+	if res.Request != nil && res.Request.URL != nil && res.Request.URL.Host != "" {
+		host = res.Request.URL.Host
+	}
+	title := host
 	return ExtractedAsset{
-		Content:   fmt.Sprintf("# %s\nURL: %s\n\n%s", host, rawURL, content),
+		Content:   fmt.Sprintf("# %s\nURL: %s\n\n%s", title, finalURL, content),
 		AssetKind: AssetLink,
 		MimeType:  "text/html",
 		Extractor: "url_fetch",
-		Title:     host,
+		Title:     title,
+		SourceURL: finalURL,
 	}, nil
 }
 

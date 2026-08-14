@@ -14,6 +14,7 @@ import (
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/notes"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
@@ -26,6 +27,7 @@ type Handler struct {
 	Engine        *pipeline.Engine
 	Conversations *storage.Conversations
 	Notes         *notes.Sync
+	Ingest        *knowledge.IngestHandler
 }
 
 type chatRequest struct {
@@ -311,6 +313,7 @@ func (h *Handler) persistAfterTurn(
 		h.persistNote(ctx, userID, display)
 		return
 	}
+	h.persistTweetCaptures(userID, grounded.Captures)
 	h.persistFacts(userID, sessionID, display)
 	h.persistTurn(userID, sessionID, grounded, attachments, assistantMessage, history, timings)
 }
@@ -326,6 +329,30 @@ func (h *Handler) persistNote(ctx context.Context, userID, content string) {
 				"userId": log.ShortID(userID),
 				"error":  err.Error(),
 			})
+		}
+	}()
+}
+
+func (h *Handler) persistTweetCaptures(userID string, captures []ingest.ExtractedAsset) {
+	if h.Ingest == nil || userID == "" || len(captures) == 0 {
+		return
+	}
+	go func() {
+		bg := context.Background()
+		for _, cap := range captures {
+			if !strings.HasPrefix(cap.Extractor, "twitter") {
+				continue
+			}
+			filename := strings.TrimSpace(cap.SourceURL)
+			if filename == "" {
+				filename = strings.TrimSpace(cap.Title)
+			}
+			if _, err := h.Ingest.PersistExtracted(bg, userID, cap, filename, nil, ""); err != nil {
+				log.Warn("failed to persist tweet capture", map[string]any{
+					"userId": log.ShortID(userID),
+					"error":  err.Error(),
+				})
+			}
 		}
 	}()
 }
@@ -428,6 +455,9 @@ func previewGroundingStatus(message string, attachments []ChatAttachment) (proto
 	}
 	if u := loneURL(message); u != "" {
 		return protocol.TurnPhaseFetching, hostFromRawURL(u)
+	}
+	if urls := ingest.FindTweetURLs(message); len(urls) > 0 {
+		return protocol.TurnPhaseFetching, hostFromRawURL(urls[0])
 	}
 	return "", ""
 }

@@ -13,11 +13,12 @@ const (
 	JobStatusSucceeded  = "succeeded"
 	JobStatusDeadLetter = "dead_letter"
 
-	JobTypeNoteEnrich           = "note_enrich"
-	JobTypeNoteEmbed            = "note_embed"
-	JobTypeMemoryExtract        = "memory_extract"
-	JobTypeSmartTagEnrich       = "smart_tag_enrich"
-	JobTypeChatGPTExportImport  = "chatgpt_export_import"
+	JobTypeNoteEnrich          = "note_enrich"
+	JobTypeNoteEmbed           = "note_embed"
+	JobTypeNoteLinkExpand      = "note_link_expand"
+	JobTypeMemoryExtract       = "memory_extract"
+	JobTypeSmartTagEnrich      = "smart_tag_enrich"
+	JobTypeChatGPTExportImport = "chatgpt_export_import"
 
 	TargetKindNote         = "note"
 	TargetKindFact         = "fact"
@@ -27,22 +28,22 @@ const (
 )
 
 type BackgroundJob struct {
-	ID             string          `json:"id"`
-	UserID         *string         `json:"user_id"`
-	JobType        string          `json:"job_type"`
-	DedupeKey      *string         `json:"dedupe_key"`
-	Payload        json.RawMessage `json:"payload"`
-	TargetKind     *string         `json:"target_kind"`
-	TargetID       *string         `json:"target_id"`
-	TargetVersion  *int64          `json:"target_version"`
-	Status         string          `json:"status"`
-	AttemptCount   int             `json:"attempt_count"`
-	MaxAttempts    int             `json:"max_attempts"`
-	RunAfter       string          `json:"run_after"`
-	LastError      *string         `json:"last_error"`
-	CreatedAt      string          `json:"created_at"`
-	UpdatedAt      string          `json:"updated_at"`
-	FinishedAt     *string         `json:"finished_at"`
+	ID            string          `json:"id"`
+	UserID        *string         `json:"user_id"`
+	JobType       string          `json:"job_type"`
+	DedupeKey     *string         `json:"dedupe_key"`
+	Payload       json.RawMessage `json:"payload"`
+	TargetKind    *string         `json:"target_kind"`
+	TargetID      *string         `json:"target_id"`
+	TargetVersion *int64          `json:"target_version"`
+	Status        string          `json:"status"`
+	AttemptCount  int             `json:"attempt_count"`
+	MaxAttempts   int             `json:"max_attempts"`
+	RunAfter      string          `json:"run_after"`
+	LastError     *string         `json:"last_error"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	FinishedAt    *string         `json:"finished_at"`
 }
 
 type BackgroundJobs struct {
@@ -66,10 +67,10 @@ func (s *BackgroundJobs) Enqueue(ctx context.Context, in EnqueueJobInput) (Backg
 		return BackgroundJob{}, fmt.Errorf("background jobs unavailable")
 	}
 	body := map[string]any{
-		"p_user_id":   in.UserID,
-		"p_job_type":  in.JobType,
+		"p_user_id":    in.UserID,
+		"p_job_type":   in.JobType,
 		"p_dedupe_key": in.DedupeKey,
-		"p_payload":   in.Payload,
+		"p_payload":    in.Payload,
 	}
 	if in.TargetKind != "" {
 		body["p_target_kind"] = in.TargetKind
@@ -106,9 +107,9 @@ func (s *BackgroundJobs) Claim(ctx context.Context, workerID string, limit int, 
 		secs = 300
 	}
 	body := map[string]any{
-		"p_worker_id":       workerID,
-		"p_limit":           limit,
-		"p_lease_seconds":   secs,
+		"p_worker_id":     workerID,
+		"p_limit":         limit,
+		"p_lease_seconds": secs,
 	}
 	var rows []BackgroundJob
 	if err := s.DB.RPC(ctx, "claim_background_jobs", body, &rows); err != nil {
@@ -122,8 +123,8 @@ func (s *BackgroundJobs) Complete(ctx context.Context, jobID, workerID string) (
 		return BackgroundJob{}, fmt.Errorf("background jobs unavailable")
 	}
 	body := map[string]any{
-		"p_job_id":     jobID,
-		"p_worker_id":  workerID,
+		"p_job_id":    jobID,
+		"p_worker_id": workerID,
 	}
 	var rows []BackgroundJob
 	if err := s.DB.RPC(ctx, "complete_background_job", body, &rows); err != nil {
@@ -144,10 +145,10 @@ func (s *BackgroundJobs) Fail(ctx context.Context, jobID, workerID, errMsg strin
 		secs = 60
 	}
 	body := map[string]any{
-		"p_job_id":                jobID,
-		"p_worker_id":             workerID,
-		"p_error":                 errMsg,
-		"p_retry_delay_seconds":   secs,
+		"p_job_id":              jobID,
+		"p_worker_id":           workerID,
+		"p_error":               errMsg,
+		"p_retry_delay_seconds": secs,
 	}
 	var rows []BackgroundJob
 	if err := s.DB.RPC(ctx, "fail_background_job", body, &rows); err != nil {

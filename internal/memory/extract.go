@@ -15,7 +15,7 @@ import (
 
 const (
 	extractAutoMin     = 0.90
-	extractEnricherVer = 1
+	extractEnricherVer = 2
 )
 
 // Extractor handles JobTypeMemoryExtract background jobs.
@@ -188,6 +188,7 @@ func (e *Extractor) extractCandidates(ctx context.Context, content string, exist
 		"Do NOT infer protected traits (race, religion, politics, health, orientation, etc).",
 		"Mark ephemeral=true for temporary logistics (today's weather, one-off meeting times).",
 		"explicit=true only when the user clearly stated the fact about themselves or asked to remember it.",
+		"Captured tweets, articles, and links are bookmarks: remember that the user saved them and any durable interests, people, or projects they imply. Do not treat third-party claims as the user's own beliefs or identity.",
 		"Prefer at most 8 memories. Skip fluff.",
 	}, "\n")
 
@@ -401,18 +402,18 @@ func (e *Extractor) queueReview(
 	conflicting bool,
 ) error {
 	payloadMap := map[string]any{
-		"kind":         c.Kind,
-		"predicate":    c.Predicate,
-		"value":        c.Value,
-		"fact":         c.Fact,
-		"entity_name":  c.EntityName,
-		"sensitivity":  c.Sensitivity,
-		"explicit":     c.Explicit,
-		"source_kind":  payload.SourceKind,
-		"source_id":    payload.SourceID,
-		"excerpt":      firstNonEmpty(payload.Excerpt, truncate(payload.Content, 400)),
-		"conflicting":  conflicting,
-		"confidence":   c.Confidence,
+		"kind":        c.Kind,
+		"predicate":   c.Predicate,
+		"value":       c.Value,
+		"fact":        c.Fact,
+		"entity_name": c.EntityName,
+		"sensitivity": c.Sensitivity,
+		"explicit":    c.Explicit,
+		"source_kind": payload.SourceKind,
+		"source_id":   payload.SourceID,
+		"excerpt":     firstNonEmpty(payload.Excerpt, truncate(payload.Content, 400)),
+		"conflicting": conflicting,
+		"confidence":  c.Confidence,
 	}
 	if match != nil {
 		payloadMap["conflict_with_fact_id"] = match.ID

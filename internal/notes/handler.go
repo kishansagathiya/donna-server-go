@@ -12,6 +12,7 @@ import (
 
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
 
@@ -275,11 +276,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Content         *string `json:"content"`
-		NoteDate        *string `json:"note_date"`
-		IsImportant     *bool   `json:"is_important"`
-		IsUrgent        *bool   `json:"is_urgent"`
-		ContentVersion  *int64  `json:"content_version"`
+		Content        *string `json:"content"`
+		NoteDate       *string `json:"note_date"`
+		IsImportant    *bool   `json:"is_important"`
+		IsUrgent       *bool   `json:"is_urgent"`
+		ContentVersion *int64  `json:"content_version"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid_body"})
@@ -291,6 +292,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		IsImportant:     body.IsImportant,
 		IsUrgent:        body.IsUrgent,
 		ExpectedVersion: body.ContentVersion,
+	}
+	pendingLinkExpand := false
+	if body.Content != nil {
+		c := strings.TrimSpace(*body.Content)
+		urls := ingest.FindHTTPURLs(c)
+		if len(urls) > 0 && (h.Sync == nil || !h.Sync.jobsEnabled()) {
+			c = ingest.ExpandLinks(c)
+		}
+		pendingLinkExpand = len(urls) > 0 && h.Sync != nil && h.Sync.jobsEnabled()
+		update.Content = &c
 	}
 	if body.NoteDate != nil && strings.TrimSpace(*body.NoteDate) != "" {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*body.NoteDate))
@@ -317,7 +328,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if update.Content != nil {
 		if h.Sync != nil {
-			h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
+			if pendingLinkExpand {
+				h.Sync.enqueueLinkExpand(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
+			} else {
+				h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
+			}
 		}
 		if h.Intents != nil {
 			h.Intents.EnqueueNote(userID, note.ID, note.Content)

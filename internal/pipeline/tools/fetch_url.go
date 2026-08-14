@@ -18,7 +18,7 @@ func FetchURLDefinition() providers.ToolDefinition {
 		Type: "function",
 		Function: providers.ToolFunctionSchema{
 			Name:        "fetch_url",
-			Description: "Fetch a public HTTP(S) page and return extracted text. Prefer for static HTML, docs, and blogs. If the result is empty or clearly incomplete (JS-heavy SPA), use browse_page instead when available.",
+			Description: "Fetch a public HTTP(S) page and return extracted text. Prefer for static HTML, docs, blogs, and Twitter/X status links. If the result is empty or clearly incomplete (JS-heavy SPA), use browse_page instead when available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

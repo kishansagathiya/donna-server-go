@@ -2,6 +2,9 @@ package chat
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -98,6 +101,40 @@ func TestSplitGroundedTranscript(t *testing.T) {
 	}
 	if !strings.Contains(got.GroundedMessage, "Image: a cat") {
 		t.Fatalf("GroundedMessage missing vision text: %q", got.GroundedMessage)
+	}
+}
+
+func TestGroundChatTurnTweetCapture(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200,
+			"tweet": map[string]any{
+				"id":   "123",
+				"url":  "https://x.com/karpathy/status/123",
+				"text": "compiled wiki > RAG",
+				"author": map[string]any{
+					"name":        "Andrej Karpathy",
+					"screen_name": "karpathy",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	restore := ingest.SetTweetEndpointsForTest(srv.URL, "", srv.Client())
+	defer restore()
+
+	got, err := groundChatTurn("worth saving https://x.com/karpathy/status/123", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Captures) != 1 {
+		t.Fatalf("Captures = %#v", got.Captures)
+	}
+	if !strings.Contains(got.GroundedMessage, "compiled wiki > RAG") {
+		t.Fatalf("GroundedMessage missing tweet: %q", got.GroundedMessage)
+	}
+	if !strings.Contains(got.GroundedMessage, "save into memory") {
+		t.Fatalf("GroundedMessage missing capture preamble: %q", got.GroundedMessage)
 	}
 }
 

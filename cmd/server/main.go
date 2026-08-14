@@ -178,13 +178,11 @@ func main() {
 			Store:    jobStore,
 			Handlers: handlers,
 		}
-		bgWorker.Start()
-		log.Print("background jobs worker enabled", map[string]any{"cloudAgents": cfg.CloudAgentsEnabled})
 	}
-	_ = bgWorker
 	_ = agentSpawner
 	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
+	ingestpkg.SetBrowserBaseURL(cfg.BrowserURL)
 
 	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}}
 	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false}
@@ -198,6 +196,14 @@ func main() {
 		Intents: intentQueue,
 		Flags:   flagResolver,
 		Memory:  memoryEnqueuer,
+	}
+	if bgWorker != nil {
+		if bgWorker.Handlers == nil {
+			bgWorker.Handlers = map[string]jobs.Handler{}
+		}
+		bgWorker.Handlers[storage.JobTypeNoteLinkExpand] = (&notes.LinkExpander{Sync: noteSync}).HandleJob
+		bgWorker.Start()
+		log.Print("background jobs worker enabled", map[string]any{"cloudAgents": cfg.CloudAgentsEnabled})
 	}
 	chatgptImportWorker.Notes = noteSync
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
@@ -386,7 +392,7 @@ func main() {
 	accountRoutes.Delete("/account", accountHandler.ServeHTTP)
 	accountRoutes.Get("/account/export", accountHandler.Export)
 
-	chatHandler := &chat.Handler{Engine: engine, Conversations: convStore, Notes: noteSync}
+	chatHandler := &chat.Handler{Engine: engine, Conversations: convStore, Notes: noteSync, Ingest: ingestHandler}
 	r.With(appauth.RequireAuth(appauth.MiddlewareConfig{
 		RequireAuth: cfg.RequireAuth,
 		Auth:        authCfg,

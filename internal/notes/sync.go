@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/knowledge/ingest"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 )
@@ -69,6 +70,11 @@ func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDat
 }
 
 func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content string, noteDate *time.Time, audio *storage.NoteAudioInput) (storage.Note, error) {
+	content = strings.TrimSpace(content)
+	urls := ingest.FindHTTPURLs(content)
+	if len(urls) > 0 && !s.jobsEnabled() {
+		content = ingest.ExpandLinks(content)
+	}
 	note, err := s.Store.CreateNote(ctx, userID, "manual", content, storage.CreateNoteOptions{
 		ID:       strings.TrimSpace(clientID),
 		NoteDate: noteDate,
@@ -77,7 +83,11 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 	if err != nil {
 		return storage.Note{}, err
 	}
-	s.enqueueEnrichment(ctx, userID, note.ID, content, note.ContentVersion)
+	if len(urls) > 0 && s.jobsEnabled() {
+		s.enqueueLinkExpand(ctx, userID, note.ID, content, note.ContentVersion)
+	} else {
+		s.enqueueEnrichment(ctx, userID, note.ID, content, note.ContentVersion)
+	}
 	if s.Intents != nil {
 		s.Intents.EnqueueNote(userID, note.ID, content)
 	}
@@ -87,6 +97,35 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 		}
 	}
 	return note, nil
+}
+
+func (s *Sync) jobsEnabled() bool {
+	return s != nil && s.Jobs != nil && s.Jobs.Enabled
+}
+
+func (s *Sync) enqueueLinkExpand(ctx context.Context, userID, noteID, content string, contentVersion int64) {
+	if !s.jobsEnabled() || noteID == "" {
+		return
+	}
+	if contentVersion <= 0 {
+		contentVersion = 1
+	}
+	key := fmt.Sprintf("note_link_expand:%s:%d", noteID, contentVersion)
+	if _, err := s.Jobs.Enqueue(ctx, storage.EnqueueJobInput{
+		UserID:        userID,
+		JobType:       storage.JobTypeNoteLinkExpand,
+		DedupeKey:     key,
+		Payload:       map[string]any{"note_id": noteID},
+		TargetKind:    storage.TargetKindNote,
+		TargetID:      noteID,
+		TargetVersion: contentVersion,
+	}); err != nil {
+		log.Warn("note link expand job enqueue failed", map[string]any{
+			"noteId": log.ShortID(noteID),
+			"error":  err.Error(),
+		})
+		s.enqueueEnrichment(ctx, userID, noteID, content, contentVersion)
+	}
 }
 
 // enqueueEnrichment persists first, then schedules durable background jobs.

@@ -84,8 +84,16 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 			}
 			originalFilename = u
 		} else if strings.TrimSpace(body.Text) != "" {
-			extracted = ingest.ExtractTextBody(body.Text, body.Title)
+			text := ingest.ExpandLinks(strings.TrimSpace(body.Text))
+			extracted = ingest.ExtractTextBody(text, body.Title)
 			originalFilename = coalesceStr(body.Title, "note.txt")
+			if extracted.SourceURL == "" {
+				if urls := ingest.FindHTTPURLs(body.Text); len(urls) == 1 {
+					u := urls[0]
+					sourceURL = &u
+					extracted.SourceURL = u
+				}
+			}
 		} else {
 			return map[string]any{"error": "invalid_body", "message": "Provide url or text"}, http.StatusUnprocessableEntity, nil
 		}
@@ -121,7 +129,31 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 		return map[string]any{"error": "unsupported_content_type"}, http.StatusUnsupportedMediaType, nil
 	}
 
-	sourceID, err := h.KB.InsertAssetSource(r.Context(), userID, extracted.Content, map[string]any{
+	sourceID, err := h.PersistExtracted(r.Context(), userID, extracted, originalFilename, sourceURL, storagePath)
+	if err != nil {
+		return nil, http.StatusUnprocessableEntity, err
+	}
+
+	title := coalesceStr(extracted.Title, originalFilename)
+	return map[string]any{
+		"source_id":  sourceID,
+		"asset_kind": extracted.AssetKind,
+		"title":      title,
+		"status":     "queued",
+		"extractor":  extracted.Extractor,
+	}, http.StatusOK, nil
+}
+
+// PersistExtracted writes an extracted asset into kb_sources, notes, and memory.
+func (h *IngestHandler) PersistExtracted(ctx context.Context, userID string, extracted ingest.ExtractedAsset, originalFilename string, sourceURL *string, storagePath string) (string, error) {
+	if h == nil || h.KB == nil || !h.KB.Enabled {
+		return "", nil
+	}
+	if sourceURL == nil && strings.TrimSpace(extracted.SourceURL) != "" {
+		u := strings.TrimSpace(extracted.SourceURL)
+		sourceURL = &u
+	}
+	sourceID, err := h.KB.InsertAssetSource(ctx, userID, extracted.Content, map[string]any{
 		"asset_kind":        extracted.AssetKind,
 		"mime_type":         extracted.MimeType,
 		"original_filename": coalesceStr(originalFilename, extracted.Title),
@@ -132,7 +164,7 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 		"extracted_at":      time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		return nil, http.StatusUnprocessableEntity, err
+		return "", err
 	}
 
 	if h.Queue != nil {
@@ -140,11 +172,11 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 	}
 
 	if h.Notes != nil {
-		_ = h.Notes.FromSource(r.Context(), userID, sourceID, "document", extracted.Content, time.Now().UTC())
+		_ = h.Notes.FromSource(ctx, userID, sourceID, "document", extracted.Content, time.Now().UTC())
 	}
 
 	if h.Memory != nil {
-		h.Memory.EnqueueFromSource(r.Context(), userID, sourceID, extracted.Content)
+		h.Memory.EnqueueFromSource(ctx, userID, sourceID, extracted.Content)
 	}
 
 	h.KB.LogKnowledge("asset ingested", map[string]any{
@@ -153,14 +185,7 @@ func (h *IngestHandler) handleIngest(r *http.Request, userID, contentType string
 		"assetKind": extracted.AssetKind,
 		"extractor": extracted.Extractor,
 	})
-
-	title := coalesceStr(extracted.Title, originalFilename)
-	return map[string]any{
-		"source_id":  sourceID,
-		"asset_kind": extracted.AssetKind,
-		"title":      title,
-		"status":     "queued",
-	}, http.StatusOK, nil
+	return sourceID, nil
 }
 
 func ingestErrorStatus(err error) int {

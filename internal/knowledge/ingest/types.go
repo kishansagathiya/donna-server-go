@@ -11,11 +11,12 @@ const (
 )
 
 type ExtractedAsset struct {
-	Content    string
-	AssetKind  AssetKind
-	MimeType   string
-	Extractor  string
-	Title      string
+	Content   string
+	AssetKind AssetKind
+	MimeType  string
+	Extractor string
+	Title     string
+	SourceURL string
 }
 
 type ExtractContext struct {
@@ -25,8 +26,8 @@ type ExtractContext struct {
 }
 
 type Extractor struct {
-	Name     string
-	Priority int
+	Name      string
+	Priority  int
 	CanHandle func(mime, filename string) bool
-	Extract  func(ctx ExtractContext) (ExtractedAsset, error)
+	Extract   func(ctx ExtractContext) (ExtractedAsset, error)
 }

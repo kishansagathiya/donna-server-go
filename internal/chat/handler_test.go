@@ -92,4 +92,9 @@ func TestPreviewGroundingStatus(t *testing.T) {
 	if phase != "" || host != "" {
 		t.Fatalf("plain text preview = %q %q", phase, host)
 	}
+
+	phase, host = previewGroundingStatus("see https://x.com/karpathy/status/1 later", nil)
+	if phase != protocol.TurnPhaseFetching || host != "x.com" {
+		t.Fatalf("tweet preview = %q %q", phase, host)
+	}
 }
