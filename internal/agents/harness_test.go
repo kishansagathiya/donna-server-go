@@ -177,6 +177,13 @@ func (m *memRunStore) Patch(ctx context.Context, userID, runID string, patch map
 }
 
 func (m *memRunStore) Heartbeat(ctx context.Context, userID, runID, workerID string, lease time.Duration) (storage.AgentRun, error) {
+	current, err := m.Get(ctx, userID, runID)
+	if err != nil {
+		return storage.AgentRun{}, err
+	}
+	if storage.IsTerminalAgentStatus(current.Status) {
+		return current, nil
+	}
 	return m.Patch(ctx, userID, runID, map[string]any{
 		"status":      storage.AgentStatusRunning,
 		"lease_owner": workerID,
@@ -215,6 +222,13 @@ func (m *memRunStore) ListSteps(ctx context.Context, userID, runID string, after
 }
 
 func (m *memRunStore) Finish(ctx context.Context, userID, runID, status string, result map[string]any, errText string) (storage.AgentRun, error) {
+	current, err := m.Get(ctx, userID, runID)
+	if err != nil {
+		return storage.AgentRun{}, err
+	}
+	if storage.IsTerminalAgentStatus(current.Status) {
+		return current, nil
+	}
 	patch := map[string]any{"status": status, "finished_at": time.Now().UTC().Format(time.RFC3339)}
 	if result != nil {
 		raw, _ := json.Marshal(result)
@@ -229,6 +243,13 @@ func (m *memRunStore) Finish(ctx context.Context, userID, runID, status string, 
 }
 
 func (m *memRunStore) WaitForUser(ctx context.Context, userID, runID string, approvalPayload map[string]any) (storage.AgentRun, error) {
+	current, err := m.Get(ctx, userID, runID)
+	if err != nil {
+		return storage.AgentRun{}, err
+	}
+	if storage.IsTerminalAgentStatus(current.Status) {
+		return current, nil
+	}
 	raw, _ := json.Marshal(approvalPayload)
 	return m.Patch(ctx, userID, runID, map[string]any{
 		"status":      storage.AgentStatusWaitingForUser,
@@ -272,6 +293,59 @@ func TestHarnessFinalAnswer(t *testing.T) {
 	if !strings.Contains(string(got.Result), "Found it") {
 		t.Fatalf("result=%s", string(got.Result))
 	}
+}
+
+func TestHarnessRespectsMarkFinishedDuringLLM(t *testing.T) {
+	run := storage.AgentRun{
+		ID:             "run-finish",
+		UserID:         "user-1",
+		Goal:           "Find Lisbon photo",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
+		MemorySnapshot: json.RawMessage(`{}`),
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
+	}
+	store := newMemRunStore(run)
+	llm := &finishDuringCallLLM{store: store, run: run}
+	reg := NewRegistry()
+	reg.Register(todoTool())
+	h := &Harness{
+		Store:    store,
+		LLM:      llm,
+		Registry: reg,
+		WorkerID: "test",
+		Budgets:  Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+	}
+	if err := h.Run(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(context.Background(), "user-1", "run-finish")
+	if got.Status != storage.AgentStatusSucceeded {
+		t.Fatalf("status=%s", got.Status)
+	}
+	if !strings.Contains(string(got.Result), "closed_by_user") {
+		t.Fatalf("user finish was overwritten: %s", string(got.Result))
+	}
+	if strings.Contains(string(got.Result), "I found the photo") {
+		t.Fatalf("harness result replaced mark-finished: %s", string(got.Result))
+	}
+}
+
+type finishDuringCallLLM struct {
+	store *memRunStore
+	run   storage.AgentRun
+}
+
+func (s *finishDuringCallLLM) CompleteOnceWithOptions(ctx context.Context, messages []providers.ChatMessage, options providers.ChatCompletionOptions) (providers.ChatCompletionMetadata, error) {
+	_, err := s.store.Finish(ctx, s.run.UserID, s.run.ID, storage.AgentStatusSucceeded, map[string]any{
+		"closed_by_user": true,
+		"summary":        "Marked finished by user.",
+	}, "")
+	if err != nil {
+		return providers.ChatCompletionMetadata{}, err
+	}
+	return providers.ChatCompletionMetadata{Content: "I found the photo"}, nil
 }
 
 func TestHarnessAskUserPauses(t *testing.T) {

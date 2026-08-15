@@ -27,3 +27,12 @@ func TestMergeUserFinishedResult(t *testing.T) {
 		t.Fatalf("empty summary: %#v", empty)
 	}
 }
+
+func TestIsTerminalAgentStatus(t *testing.T) {
+	if !IsTerminalAgentStatus(AgentStatusSucceeded) || !IsTerminalAgentStatus(AgentStatusCancelled) {
+		t.Fatal("succeeded and cancelled should be terminal")
+	}
+	if IsTerminalAgentStatus(AgentStatusRunning) || IsTerminalAgentStatus(AgentStatusWaitingForUser) {
+		t.Fatal("running and waiting_for_user should not be terminal")
+	}
+}

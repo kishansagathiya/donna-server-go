@@ -32,6 +32,15 @@ const (
 	TargetKindAgentRun = "agent_run"
 )
 
+func IsTerminalAgentStatus(status string) bool {
+	switch status {
+	case AgentStatusSucceeded, AgentStatusFailed, AgentStatusCancelled, AgentStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
 type AgentRun struct {
 	ID               string          `json:"id"`
 	UserID           string          `json:"user_id"`
@@ -220,16 +229,23 @@ func (s *AgentsStore) Patch(ctx context.Context, userID, runID string, patch map
 }
 
 func (s *AgentsStore) Heartbeat(ctx context.Context, userID, runID, workerID string, lease time.Duration) (AgentRun, error) {
+	run, err := s.Get(ctx, userID, runID)
+	if err != nil {
+		return AgentRun{}, err
+	}
+	if IsTerminalAgentStatus(run.Status) {
+		return run, nil
+	}
 	if lease <= 0 {
 		lease = 2 * time.Minute
 	}
 	now := time.Now().UTC()
 	until := now.Add(lease).Format(time.RFC3339Nano)
 	return s.Patch(ctx, userID, runID, map[string]any{
-		"lease_owner":        workerID,
-		"lease_until":        until,
-		"last_heartbeat_at":  now.Format(time.RFC3339Nano),
-		"status":             AgentStatusRunning,
+		"lease_owner":       workerID,
+		"lease_until":       until,
+		"last_heartbeat_at": now.Format(time.RFC3339Nano),
+		"status":            AgentStatusRunning,
 	})
 }
 
@@ -348,12 +364,12 @@ func (s *AgentsStore) MarkFinished(ctx context.Context, userID, runID string) (A
 
 	result := MergeUserFinishedResult(run.Result)
 	seq := run.StepCount + 1
-	if _, err := s.AppendStep(ctx, userID, runID, seq, AgentStepStatus, map[string]any{
+	// A racing harness step can collide on seq. Still close the run so
+	// Mark finished is not stuck behind a timeline insert.
+	_, _ = s.AppendStep(ctx, userID, runID, seq, AgentStepStatus, map[string]any{
 		"text": "Marked finished by user.",
 		"kind": "user_finished",
-	}); err != nil {
-		return AgentRun{}, err
-	}
+	})
 	return s.Finish(ctx, userID, runID, AgentStatusSucceeded, result, "")
 }
 
@@ -376,6 +392,13 @@ func MergeUserFinishedResult(existing json.RawMessage) map[string]any {
 }
 
 func (s *AgentsStore) Finish(ctx context.Context, userID, runID, status string, result map[string]any, errText string) (AgentRun, error) {
+	current, err := s.Get(ctx, userID, runID)
+	if err != nil {
+		return AgentRun{}, err
+	}
+	if IsTerminalAgentStatus(current.Status) {
+		return current, nil
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	patch := map[string]any{
 		"status":           status,
@@ -400,6 +423,13 @@ func (s *AgentsStore) Finish(ctx context.Context, userID, runID, status string, 
 }
 
 func (s *AgentsStore) WaitForUser(ctx context.Context, userID, runID string, approvalPayload map[string]any) (AgentRun, error) {
+	current, err := s.Get(ctx, userID, runID)
+	if err != nil {
+		return AgentRun{}, err
+	}
+	if IsTerminalAgentStatus(current.Status) {
+		return current, nil
+	}
 	patch := map[string]any{
 		"status":      AgentStatusWaitingForUser,
 		"lease_owner": nil,

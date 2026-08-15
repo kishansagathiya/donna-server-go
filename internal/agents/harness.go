@@ -181,6 +181,14 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 			return h.fail(runCtx, run, seq, "llm_error: "+err.Error())
 		}
 
+		closed, err := h.closed(runCtx, run)
+		if err != nil {
+			return err
+		}
+		if closed {
+			return nil
+		}
+
 		if len(meta.ToolCalls) == 0 {
 			content := strings.TrimSpace(meta.Content)
 			if content == "" {
@@ -406,14 +414,30 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 	return messages, plan, seq, nil
 }
 
+func (h *Harness) closed(ctx context.Context, run storage.AgentRun) (bool, error) {
+	fresh, err := h.Store.Get(ctx, run.UserID, run.ID)
+	if err != nil {
+		return false, err
+	}
+	return storage.IsTerminalAgentStatus(fresh.Status), nil
+}
+
 func (h *Harness) succeed(ctx context.Context, run storage.AgentRun, result map[string]any) error {
-	_, err := h.Store.Finish(ctx, run.UserID, run.ID, storage.AgentStatusSucceeded, result, "")
+	closed, err := h.closed(ctx, run)
+	if err != nil || closed {
+		return err
+	}
+	_, err = h.Store.Finish(ctx, run.UserID, run.ID, storage.AgentStatusSucceeded, result, "")
 	return err
 }
 
 func (h *Harness) fail(ctx context.Context, run storage.AgentRun, seq int, errText string) error {
+	closed, err := h.closed(ctx, run)
+	if err != nil || closed {
+		return err
+	}
 	_, _ = h.Store.AppendStep(ctx, run.UserID, run.ID, seq+1, storage.AgentStepError, map[string]any{"error": errText})
-	_, err := h.Store.Finish(ctx, run.UserID, run.ID, storage.AgentStatusFailed, nil, errText)
+	_, err = h.Store.Finish(ctx, run.UserID, run.ID, storage.AgentStatusFailed, nil, errText)
 	return err
 }
 
