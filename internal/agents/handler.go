@@ -34,6 +34,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Goal        string                `json:"goal"`
 		IntentID    *string               `json:"intent_id"`
 		MaxSteps    int                   `json:"max_steps"`
+		Skills      []string              `json:"skills"`
 		Attachments []chat.ChatAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -46,15 +47,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run, err := h.Spawner.Spawn(r.Context(), userID, SpawnInput{
-		Goal:         grounded.DisplayMessage,
-		GroundedGoal: grounded.GroundedMessage,
-		IntentID:     body.IntentID,
-		MaxSteps:     body.MaxSteps,
+		Goal:           grounded.DisplayMessage,
+		GroundedGoal:   grounded.GroundedMessage,
+		IntentID:       body.IntentID,
+		MaxSteps:       body.MaxSteps,
+		SelectedSkills: body.Skills,
 	})
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "disabled") {
 			status = http.StatusServiceUnavailable
+		}
+		if strings.Contains(err.Error(), "skill_not_found") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "skill_not_found", "message": err.Error()})
+			return
 		}
 		writeJSON(w, status, map[string]string{"error": "spawn_failed", "message": err.Error()})
 		return

@@ -63,17 +63,19 @@ func (n *NotesBridge) Search(ctx context.Context, userID, query string, limit in
 
 // Spawner creates agent_runs and enqueues background work.
 type Spawner struct {
-	Store *storage.AgentsStore
-	Jobs  *storage.BackgroundJobs
-	Mem   MemorySearcher
+	Store  *storage.AgentsStore
+	Jobs   *storage.BackgroundJobs
+	Mem    MemorySearcher
+	Skills SkillProvider
 }
 
 type SpawnInput struct {
-	Goal          string
-	GroundedGoal  string // optional LLM-facing goal (attachments grounded); falls back to Goal
-	IntentID      *string
-	ToolAllowlist []string
-	MaxSteps      int
+	Goal           string
+	GroundedGoal   string // optional LLM-facing goal (attachments grounded); falls back to Goal
+	IntentID       *string
+	ToolAllowlist  []string
+	SelectedSkills []string
+	MaxSteps       int
 }
 
 func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (storage.AgentRun, error) {
@@ -90,7 +92,29 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	}
 	allow := in.ToolAllowlist
 	if len(allow) == 0 {
-		allow = []string{"orchestration", "memory", "web", "browser"}
+		allow = []string{"orchestration", "memory", "web", "browser", "skills"}
+	}
+
+	// Validate user-selected skills (names must resolve; user skills shadow
+	// bundled system skills).
+	var selected []string
+	for _, name := range in.SelectedSkills {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if s.Skills != nil {
+			if _, err := s.Skills.GetByName(ctx, userID, name); err != nil {
+				return storage.AgentRun{}, fmt.Errorf("skill_not_found: %s", name)
+			}
+		}
+		if len(selected) >= 5 {
+			return storage.AgentRun{}, fmt.Errorf("too_many_skills")
+		}
+		selected = append(selected, name)
+	}
+	if selected == nil {
+		selected = []string{}
 	}
 
 	snapshot := map[string]any{}
@@ -105,12 +129,59 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 			snapshot["hits"] = hits
 		}
 	}
+	if s.Skills != nil {
+		matches := s.Skills.Match(ctx, userID, goal, 5)
+		skillsSnapshot := make([]map[string]any, 0, len(matches)+len(selected))
+		selectedSet := map[string]struct{}{}
+		for _, name := range selected {
+			selectedSet[name] = struct{}{}
+		}
+		for _, m := range matches {
+			_, isSelected := selectedSet[m.Skill.Name]
+			entry := map[string]any{
+				"name":        m.Skill.Name,
+				"description": m.Skill.Description,
+				"source":      m.Skill.Source,
+				"kind":        map[bool]string{true: "selected", false: "matched"}[isSelected],
+			}
+			if isSelected {
+				entry["content"] = m.Skill.Content
+			}
+			skillsSnapshot = append(skillsSnapshot, entry)
+		}
+		// Selected skills that matched nothing still go in as selected.
+		for _, name := range selected {
+			found := false
+			for _, m := range matches {
+				if m.Skill.Name == name {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			if sk, err := s.Skills.GetByName(ctx, userID, name); err == nil {
+				skillsSnapshot = append(skillsSnapshot, map[string]any{
+					"name":        sk.Name,
+					"description": sk.Description,
+					"source":      sk.Source,
+					"kind":        "selected",
+					"content":     sk.Content,
+				})
+			}
+		}
+		if len(skillsSnapshot) > 0 {
+			snapshot["skills"] = skillsSnapshot
+		}
+	}
 	raw, _ := json.Marshal(snapshot)
 
 	run, err := s.Store.Create(ctx, userID, storage.NewAgentRunInput{
 		IntentID:       in.IntentID,
 		Goal:           goal,
 		ToolAllowlist:  allow,
+		SelectedSkills: selected,
 		MaxSteps:       in.MaxSteps,
 		MemorySnapshot: raw,
 	})

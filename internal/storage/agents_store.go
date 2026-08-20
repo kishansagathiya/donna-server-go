@@ -50,6 +50,7 @@ type AgentRun struct {
 	Plan             json.RawMessage `json:"plan"`
 	MemorySnapshot   json.RawMessage `json:"memory_snapshot"`
 	ToolAllowlist    []string        `json:"tool_allowlist"`
+	SelectedSkills   []string        `json:"selected_skills"`
 	MaxSteps         int             `json:"max_steps"`
 	StepCount        int             `json:"step_count"`
 	RedirectPending  *string         `json:"redirect_pending,omitempty"`
@@ -74,11 +75,12 @@ type AgentStep struct {
 }
 
 type NewAgentRunInput struct {
-	IntentID      *string
-	Goal          string
-	ToolAllowlist []string
-	MaxSteps      int
-	MemorySnapshot json.RawMessage
+	IntentID        *string
+	Goal            string
+	ToolAllowlist   []string
+	SelectedSkills  []string
+	MaxSteps        int
+	MemorySnapshot  json.RawMessage
 }
 
 type AgentsStore struct {
@@ -87,7 +89,7 @@ type AgentsStore struct {
 }
 
 func (s *AgentsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,goal,status,plan,memory_snapshot,tool_allowlist,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
+	return "id,user_id,intent_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
 }
 
 func (s *AgentsStore) selectStepColumns() string {
@@ -110,6 +112,10 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	if allow == nil {
 		allow = []string{}
 	}
+	selected := in.SelectedSkills
+	if selected == nil {
+		selected = []string{}
+	}
 	mem := in.MemorySnapshot
 	if len(mem) == 0 {
 		mem = json.RawMessage(`{}`)
@@ -121,6 +127,7 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 		"plan":            []any{},
 		"memory_snapshot": mem,
 		"tool_allowlist":  allow,
+		"selected_skills": selected,
 		"max_steps":       maxSteps,
 		"step_count":      0,
 	}

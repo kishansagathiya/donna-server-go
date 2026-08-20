@@ -10,9 +10,10 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 )
 
-// DefaultToolsets builds the Phase-1 agent tool registry.
+// DefaultToolsets builds the agent tool registry.
 // When browserURL is set (donna-browser sidecar), browse_page is registered.
-func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string) *Registry {
+// When prov is non-nil (skills enabled), skills tools are registered.
+func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
 	reg.Register(askUserTool())
@@ -28,6 +29,11 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string) 
 		reg.Register(browsePageTool(client))
 	}
 	reg.Register(sessionSearchTool())
+	if prov != nil {
+		reg.Register(loadSkillTool(prov))
+		reg.Register(saveSkillTool(prov))
+		reg.Register(listSkillsTool(prov))
+	}
 	return reg
 }
 

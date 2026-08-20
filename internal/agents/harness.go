@@ -341,6 +341,7 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 	}
 	memBlock := ""
 	groundedGoal := run.Goal
+	skillsBlock := ""
 	if len(run.MemorySnapshot) > 0 && string(run.MemorySnapshot) != "{}" && string(run.MemorySnapshot) != "null" {
 		var snap map[string]any
 		if err := json.Unmarshal(run.MemorySnapshot, &snap); err == nil {
@@ -352,6 +353,7 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 				rawHits, _ := json.Marshal(map[string]any{"hits": hits})
 				memBlock = "\n\nMemory snapshot:\n" + string(rawHits)
 			}
+			skillsBlock = renderSkillsBlock(snap["skills"])
 		} else {
 			memBlock = "\n\nMemory snapshot:\n" + string(run.MemorySnapshot)
 		}
@@ -371,7 +373,7 @@ func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) (
 	}
 
 	messages := []providers.ChatMessage{
-		{Role: "system", Content: sys + memBlock},
+		{Role: "system", Content: sys + memBlock + skillsBlock},
 		{Role: "user", Content: "Goal: " + groundedGoal},
 	}
 
@@ -450,11 +452,60 @@ Rules:
 - Prefer memory_search / search_notes before external fetch when the answer may be personal.
 - Use fetch_url for static HTML/docs. Use browse_page (real browser + JavaScript) when fetch_url is empty/incomplete or the site is a JS app. Prefer fetch_url first when unsure.
 - Keep a short todo plan via the todo tool for multi-step goals.
+- Skills listed in the system prompt may help: call load_skill(name) to get a skill's full instructions and follow them when they apply. User-selected skills are already included in full — follow them.
 - When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply UI after ask_user.
 - Whenever the answer is one of a few discrete choices (airports, dates, yes/no, airlines, seat prefs, which note/photo), include an options array with short labels. Set allow_multiple true only when they may pick more than one. Prefer taps over typing.
 - When you need irreversible approval (pay, book, send), call request_approval and stop.
 - When the goal is complete, reply with a clear final summary and no further tool calls.
 - Never invent confirmations, bookings, or private facts not grounded in tool results.`)
+}
+
+// renderSkillsBlock renders the snapshot skills section for the system prompt.
+// Selected skills (user picked) are injected in full; matched skills are
+// listed name+description for progressive disclosure via load_skill.
+func renderSkillsBlock(raw any) string {
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return ""
+	}
+	var selected strings.Builder
+	var matched strings.Builder
+	for _, item := range arr {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		desc, _ := entry["description"].(string)
+		kind, _ := entry["kind"].(string)
+		if kind == "selected" {
+			selected.WriteString("\n\n### Skill: " + name)
+			if strings.TrimSpace(desc) != "" {
+				selected.WriteString("\n" + desc)
+			}
+			if content, _ := entry["content"].(string); strings.TrimSpace(content) != "" {
+				selected.WriteString("\n\n" + strings.TrimSpace(content))
+			}
+			continue
+		}
+		matched.WriteString("- " + name)
+		if strings.TrimSpace(desc) != "" {
+			matched.WriteString(" — " + desc)
+		}
+		matched.WriteString("\n")
+	}
+	var b strings.Builder
+	if selected.Len() > 0 {
+		b.WriteString("\n\nUser-selected skills — follow these procedures:\n" + strings.TrimSpace(selected.String()))
+	}
+	if matched.Len() > 0 {
+		b.WriteString("\n\nMatching skills (call load_skill(name) for full instructions before relying on one):\n")
+		b.WriteString(strings.TrimSuffix(matched.String(), "\n"))
+	}
+	return b.String()
 }
 
 // normalizeAskOptions coerces tool args into [{id,label}, ...].

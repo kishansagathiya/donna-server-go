@@ -43,8 +43,8 @@ func TestRegistryAllowlistByToolset(t *testing.T) {
 }
 
 func TestDefaultToolsetsRegistersBrowseWhenConfigured(t *testing.T) {
-	without := DefaultToolsets(nil, nil, "")
-	with := DefaultToolsets(nil, nil, "http://127.0.0.1:9229")
+	without := DefaultToolsets(nil, nil, "", nil)
+	with := DefaultToolsets(nil, nil, "http://127.0.0.1:9229", nil)
 	if _, ok := without.Get("browse_page"); ok {
 		t.Fatal("browse_page must not register without browser URL")
 	}

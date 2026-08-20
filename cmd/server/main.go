@@ -39,6 +39,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/skills"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	ttspkg "github.com/kishansagathiya/donna/donna-server-go/internal/tts"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/voice"
@@ -147,11 +148,21 @@ func main() {
 		MinScore:  cfg.MemoryMinScore,
 	}
 	notesBridge := &agents.NotesBridge{Notes: notesStore}
-	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL)
+	skillsStore := &storage.SkillsStore{DB: supa, Enabled: cfg.AgentSkillsEnabled && cfg.CloudAgentsEnabled && supa.Enabled()}
+	var skillProvider *skills.Provider
+	if skillsStore.Enabled {
+		skillProvider = &skills.Provider{Store: skillsStore}
+	}
+	var agentSkillProv agents.SkillProvider
+	if skillProvider != nil {
+		agentSkillProv = skillProvider
+	}
+	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL, agentSkillProv)
 	if cfg.CloudAgentsEnabled {
 		log.Print("cloud agents tools", map[string]any{
 			"count":      agentRegistry.Len(),
 			"browserUrl": cfg.BrowserURL != "",
+			"skills":     skillProvider != nil,
 		})
 	}
 	agentHarness := &agents.Harness{
@@ -161,7 +172,7 @@ func main() {
 		WorkerID: "donna-server",
 	}
 	agentWorker := &agents.Worker{Store: agentsStore, Harness: agentHarness}
-	agentSpawner := &agents.Spawner{Store: agentsStore, Jobs: jobStore, Mem: memBridge}
+	agentSpawner := &agents.Spawner{Store: agentsStore, Jobs: jobStore, Mem: memBridge, Skills: agentSkillProv}
 
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
@@ -357,6 +368,12 @@ func main() {
 		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase}
 		agents.RegisterRoutes(r, authMiddleware, agentsHandler)
 		log.Print("cloud agents: /agent-runs enabled", map[string]any{"tools": agentRegistry.Len()})
+	}
+
+	if skillsStore.Enabled {
+		skillsHandler := &skills.Handler{Provider: skillProvider, Store: skillsStore}
+		skills.RegisterRoutes(r, authMiddleware, skillsHandler)
+		log.Print("agent skills: /skills enabled", map[string]any{"bundled": skills.FormatBundled()})
 	}
 
 	if connectorSvc != nil {
