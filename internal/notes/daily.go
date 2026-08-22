@@ -22,6 +22,7 @@ type DailyTask struct {
 	NoteID      string `json:"note_id"`
 	Title       string `json:"title"`
 	Preview     string `json:"preview"`
+	Content     string `json:"content,omitempty"`
 	Priority    string `json:"priority"`
 	Reason      string `json:"reason"`
 	IsUrgent    bool   `json:"is_urgent"`
@@ -114,6 +115,7 @@ func tasksFromNotes(notes []storage.NoteSummary, priority, reason string) []Dail
 			NoteID:      note.ID,
 			Title:       note.Title,
 			Preview:     note.Preview,
+			Content:     note.Content,
 			Priority:    priority,
 			Reason:      reason,
 			IsUrgent:    note.IsUrgent,

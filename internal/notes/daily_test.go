@@ -83,6 +83,48 @@ func TestDailyChecker_Check_emptyNotes(t *testing.T) {
 	}
 }
 
+func TestDailyChecker_Check_includesContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, _ := url.ParseQuery(r.URL.RawQuery)
+		if !strings.Contains(q.Get("select"), "content") {
+			t.Errorf("ListQuadrant select missing content: %q", q.Get("select"))
+		}
+		urgent := q.Get("is_urgent")
+		important := q.Get("is_important")
+		if urgent == "eq.true" && important == "eq.true" {
+			_ = json.NewEncoder(w).Encode([]storage.NoteSummary{{
+				ID:          "do",
+				Title:       "https://ecosystem.firstwingsconnect.com/progra...",
+				Preview:     "",
+				Content:     "https://ecosystem.firstwingsconnect.com/programs/apply-now-for-funding",
+				IsUrgent:    true,
+				IsImportant: true,
+			}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]storage.NoteSummary{})
+	}))
+	t.Cleanup(srv.Close)
+
+	dc := &DailyChecker{
+		Store: &storage.Notes{
+			DB:      storage.NewSupabase(srv.URL, "test-key"),
+			Enabled: true,
+		},
+	}
+
+	briefing, err := dc.Check(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(briefing.Tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(briefing.Tasks))
+	}
+	if briefing.Tasks[0].Content != "https://ecosystem.firstwingsconnect.com/programs/apply-now-for-funding" {
+		t.Fatalf("content = %q", briefing.Tasks[0].Content)
+	}
+}
+
 func TestDailyChecker_Check_ordersByEisenhower(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q, _ := url.ParseQuery(r.URL.RawQuery)
