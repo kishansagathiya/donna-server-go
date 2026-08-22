@@ -74,6 +74,9 @@ type NoteSummary struct {
 	EnrichmentStatus  string   `json:"enrichment_status"`
 	EnrichmentVersion int64    `json:"enrichment_version"`
 	Tags              []string `json:"tags,omitempty"`
+	// Content is omitted from feed/search summaries; ListQuadrant includes it
+	// so Today can show the full note instead of the truncated title.
+	Content string `json:"content,omitempty"`
 }
 
 type NoteFlags struct {
@@ -375,7 +378,7 @@ func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []stri
 
 func (n *Notes) ListQuadrant(ctx context.Context, userID string, urgent, important bool, limit int) ([]NoteSummary, error) {
 	q := url.Values{}
-	q.Set("select", n.summaryColumns())
+	q.Set("select", n.summaryColumns()+",content")
 	q.Set("user_id", "eq."+userID)
 	q.Set("is_urgent", fmt.Sprintf("eq.%t", urgent))
 	q.Set("is_important", fmt.Sprintf("eq.%t", important))
