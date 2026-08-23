@@ -14,6 +14,9 @@ import (
 type ToolResult struct {
 	Content string
 	Meta    map[string]any
+	// Finish ends the agent run successfully after this tool result is logged.
+	Finish       bool
+	FinishResult map[string]any
 }
 
 // ToolHandler executes one tool call for an agent run.
@@ -90,12 +93,13 @@ func (r *Registry) Len() int {
 
 // RunContext is passed into every tool invocation.
 type RunContext struct {
-	UserID    string
-	RunID     string
-	Goal      string
-	Plan      []TodoItem
-	SetPlan   func([]TodoItem)
-	Extra     map[string]any
+	UserID     string
+	RunID      string
+	EmployeeID string
+	Goal       string
+	Plan       []TodoItem
+	SetPlan    func([]TodoItem)
+	Extra      map[string]any
 }
 
 type TodoItem struct {

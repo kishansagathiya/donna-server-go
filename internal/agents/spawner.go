@@ -73,6 +73,7 @@ type SpawnInput struct {
 	Goal           string
 	GroundedGoal   string // optional LLM-facing goal (attachments grounded); falls back to Goal
 	IntentID       *string
+	EmployeeID     *string
 	ToolAllowlist  []string
 	SelectedSkills []string
 	MaxSteps       int
@@ -179,6 +180,7 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 
 	run, err := s.Store.Create(ctx, userID, storage.NewAgentRunInput{
 		IntentID:       in.IntentID,
+		EmployeeID:     in.EmployeeID,
 		Goal:           goal,
 		ToolAllowlist:  allow,
 		SelectedSkills: selected,
@@ -207,8 +209,9 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 
 // Worker handles background_jobs of type agent_run.
 type Worker struct {
-	Store   *storage.AgentsStore
-	Harness *Harness
+	Store      *storage.AgentsStore
+	Harness    *Harness
+	AfterRun   func(ctx context.Context, run storage.AgentRun)
 }
 
 func (w *Worker) HandleJob(ctx context.Context, job storage.BackgroundJob) error {
@@ -242,9 +245,21 @@ func (w *Worker) HandleJob(ctx context.Context, job storage.BackgroundJob) error
 	}
 	switch run.Status {
 	case storage.AgentStatusSucceeded, storage.AgentStatusFailed, storage.AgentStatusCancelled, storage.AgentStatusExpired, storage.AgentStatusWaitingForUser:
+		if w.AfterRun != nil {
+			w.AfterRun(ctx, run)
+		}
 		return nil
 	}
-	return w.Harness.Run(ctx, run)
+	runErr := w.Harness.Run(ctx, run)
+	if w.AfterRun != nil {
+		fresh, getErr := w.Store.GetByID(ctx, run.ID)
+		if getErr == nil {
+			w.AfterRun(ctx, fresh)
+		} else {
+			w.AfterRun(ctx, run)
+		}
+	}
+	return runErr
 }
 
 // ResumeAfterApproval requeues a waiting/finished agent and enqueues a job.

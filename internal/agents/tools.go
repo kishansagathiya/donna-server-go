@@ -13,7 +13,8 @@ import (
 // DefaultToolsets builds the agent tool registry.
 // When browserURL is set (donna-browser sidecar), browse_page is registered.
 // When prov is non-nil (skills enabled), skills tools are registered.
-func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider) *Registry {
+// When employees is non-nil, report_progress / complete_goal are registered.
+func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider, employees EmployeeProgressWriter) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
 	reg.Register(askUserTool())
@@ -33,6 +34,11 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, 
 		reg.Register(loadSkillTool(prov))
 		reg.Register(saveSkillTool(prov))
 		reg.Register(listSkillsTool(prov))
+	}
+	if employees != nil {
+		for _, t := range employeeTools(employees) {
+			reg.Register(t)
+		}
 	}
 	return reg
 }

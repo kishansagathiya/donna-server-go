@@ -45,6 +45,7 @@ type AgentRun struct {
 	ID               string          `json:"id"`
 	UserID           string          `json:"user_id"`
 	IntentID         *string         `json:"intent_id,omitempty"`
+	EmployeeID       *string         `json:"employee_id,omitempty"`
 	Goal             string          `json:"goal"`
 	Status           string          `json:"status"`
 	Plan             json.RawMessage `json:"plan"`
@@ -76,6 +77,7 @@ type AgentStep struct {
 
 type NewAgentRunInput struct {
 	IntentID        *string
+	EmployeeID      *string
 	Goal            string
 	ToolAllowlist   []string
 	SelectedSkills  []string
@@ -89,7 +91,7 @@ type AgentsStore struct {
 }
 
 func (s *AgentsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
+	return "id,user_id,intent_id,employee_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
 }
 
 func (s *AgentsStore) selectStepColumns() string {
@@ -133,6 +135,9 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	}
 	if in.IntentID != nil && *in.IntentID != "" {
 		body["intent_id"] = *in.IntentID
+	}
+	if in.EmployeeID != nil && *in.EmployeeID != "" {
+		body["employee_id"] = *in.EmployeeID
 	}
 
 	var rows []AgentRun
@@ -204,6 +209,35 @@ func (s *AgentsStore) List(ctx context.Context, userID, status string, limit, of
 	q.Set("order", "created_at.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	q.Set("offset", fmt.Sprintf("%d", offset))
+	var rows []AgentRun
+	if err := s.DB.Get(ctx, "agent_runs", q, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []AgentRun{}
+	}
+	return rows, nil
+}
+
+func (s *AgentsStore) ListByEmployee(ctx context.Context, userID, employeeID string, limit int) ([]AgentRun, error) {
+	if s == nil || !s.Enabled || s.DB == nil {
+		return nil, fmt.Errorf("agents_disabled")
+	}
+	if strings.TrimSpace(employeeID) == "" {
+		return nil, fmt.Errorf("employee_id_required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q := url.Values{}
+	q.Set("select", s.selectRunColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("employee_id", "eq."+employeeID)
+	q.Set("order", "created_at.desc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
 	var rows []AgentRun
 	if err := s.DB.Get(ctx, "agent_runs", q, &rows); err != nil {
 		return nil, err

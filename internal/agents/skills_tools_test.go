@@ -75,11 +75,11 @@ func (f *fakeSkillProvider) Match(ctx context.Context, userID, goal string, limi
 }
 
 func TestDefaultToolsetsRegistersSkillsTools(t *testing.T) {
-	without := DefaultToolsets(nil, nil, "", nil)
+	without := DefaultToolsets(nil, nil, "", nil, nil)
 	if _, ok := without.Get("load_skill"); ok {
 		t.Fatal("load_skill must not register without provider")
 	}
-	with := DefaultToolsets(nil, nil, "", newFakeSkillProvider())
+	with := DefaultToolsets(nil, nil, "", newFakeSkillProvider(), nil)
 	for _, name := range []string{"load_skill", "save_skill", "list_skills"} {
 		if _, ok := with.Get(name); !ok {
 			t.Fatalf("%s should register with provider", name)

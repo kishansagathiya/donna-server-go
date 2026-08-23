@@ -132,6 +132,9 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 		},
 		Extra: map[string]any{"store": h.Store},
 	}
+	if run.EmployeeID != nil {
+		rc.EmployeeID = *run.EmployeeID
+	}
 
 	for step := 0; step < budgets.MaxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
@@ -322,6 +325,17 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				Name:       name,
 				Content:    result.Content,
 			})
+
+			if result.Finish {
+				out := map[string]any{
+					"summary": result.Content,
+					"plan":    plan,
+				}
+				for k, v := range result.FinishResult {
+					out[k] = v
+				}
+				return h.succeed(runCtx, run, out)
+			}
 		}
 
 		// Persist plan if updated.
@@ -456,6 +470,7 @@ Rules:
 - When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply UI after ask_user.
 - Whenever the answer is one of a few discrete choices (airports, dates, yes/no, airlines, seat prefs, which note/photo), include an options array with short labels. Set allow_multiple true only when they may pick more than one. Prefer taps over typing.
 - When you need irreversible approval (pay, book, send), call request_approval and stop.
+- On AI employee shifts: call report_progress before wrapping up; call complete_goal only when the ongoing goal is fully achieved.
 - When the goal is complete, reply with a clear final summary and no further tool calls.
 - Never invent confirmations, bookings, or private facts not grounded in tool results.`)
 }
