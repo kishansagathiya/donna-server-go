@@ -56,7 +56,7 @@ func (s *Service) StartShift(ctx context.Context, emp storage.AIEmployee) error 
 	shiftNum := emp.ShiftCount + 1
 	allow := emp.ToolAllowlist
 	if len(allow) == 0 {
-		allow = []string{"orchestration", "memory", "web", "browser", "skills", "employee"}
+		allow = []string{"orchestration", "memory", "web", "browser", "skills", "commerce", "employee"}
 	} else {
 		allow = ensureToolset(allow, "employee")
 		allow = ensureToolset(allow, "orchestration")

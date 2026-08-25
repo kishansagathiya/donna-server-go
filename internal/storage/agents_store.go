@@ -10,23 +10,23 @@ import (
 )
 
 const (
-	AgentStatusQueued          = "queued"
-	AgentStatusRunning         = "running"
-	AgentStatusWaitingForUser  = "waiting_for_user"
-	AgentStatusSucceeded       = "succeeded"
-	AgentStatusFailed          = "failed"
-	AgentStatusCancelled       = "cancelled"
-	AgentStatusExpired         = "expired"
+	AgentStatusQueued         = "queued"
+	AgentStatusRunning        = "running"
+	AgentStatusWaitingForUser = "waiting_for_user"
+	AgentStatusSucceeded      = "succeeded"
+	AgentStatusFailed         = "failed"
+	AgentStatusCancelled      = "cancelled"
+	AgentStatusExpired        = "expired"
 
-	AgentStepThought          = "thought"
-	AgentStepToolCall         = "tool_call"
-	AgentStepToolResult       = "tool_result"
-	AgentStepMemoryRetrieve   = "memory_retrieve"
-	AgentStepApprovalRequest  = "approval_request"
-	AgentStepUserMessage      = "user_message"
-	AgentStepStatus           = "status"
-	AgentStepCompress         = "compress"
-	AgentStepError            = "error"
+	AgentStepThought         = "thought"
+	AgentStepToolCall        = "tool_call"
+	AgentStepToolResult      = "tool_result"
+	AgentStepMemoryRetrieve  = "memory_retrieve"
+	AgentStepApprovalRequest = "approval_request"
+	AgentStepUserMessage     = "user_message"
+	AgentStepStatus          = "status"
+	AgentStepCompress        = "compress"
+	AgentStepError           = "error"
 
 	JobTypeAgentRun    = "agent_run"
 	TargetKindAgentRun = "agent_run"
@@ -42,27 +42,28 @@ func IsTerminalAgentStatus(status string) bool {
 }
 
 type AgentRun struct {
-	ID               string          `json:"id"`
-	UserID           string          `json:"user_id"`
-	IntentID         *string         `json:"intent_id,omitempty"`
-	EmployeeID       *string         `json:"employee_id,omitempty"`
-	Goal             string          `json:"goal"`
-	Status           string          `json:"status"`
-	Plan             json.RawMessage `json:"plan"`
-	MemorySnapshot   json.RawMessage `json:"memory_snapshot"`
-	ToolAllowlist    []string        `json:"tool_allowlist"`
-	SelectedSkills   []string        `json:"selected_skills"`
-	MaxSteps         int             `json:"max_steps"`
-	StepCount        int             `json:"step_count"`
-	RedirectPending  *string         `json:"redirect_pending,omitempty"`
-	LeaseOwner       *string         `json:"lease_owner,omitempty"`
-	LeaseUntil       *string         `json:"lease_until,omitempty"`
-	LastHeartbeatAt  *string         `json:"last_heartbeat_at,omitempty"`
-	Error            *string         `json:"error,omitempty"`
-	Result           json.RawMessage `json:"result,omitempty"`
-	CreatedAt        string          `json:"created_at"`
-	UpdatedAt        string          `json:"updated_at"`
-	FinishedAt       *string         `json:"finished_at,omitempty"`
+	ID              string          `json:"id"`
+	UserID          string          `json:"user_id"`
+	IntentID        *string         `json:"intent_id,omitempty"`
+	EmployeeID      *string         `json:"employee_id,omitempty"`
+	ScheduleID      *string         `json:"schedule_id,omitempty"`
+	Goal            string          `json:"goal"`
+	Status          string          `json:"status"`
+	Plan            json.RawMessage `json:"plan"`
+	MemorySnapshot  json.RawMessage `json:"memory_snapshot"`
+	ToolAllowlist   []string        `json:"tool_allowlist"`
+	SelectedSkills  []string        `json:"selected_skills"`
+	MaxSteps        int             `json:"max_steps"`
+	StepCount       int             `json:"step_count"`
+	RedirectPending *string         `json:"redirect_pending,omitempty"`
+	LeaseOwner      *string         `json:"lease_owner,omitempty"`
+	LeaseUntil      *string         `json:"lease_until,omitempty"`
+	LastHeartbeatAt *string         `json:"last_heartbeat_at,omitempty"`
+	Error           *string         `json:"error,omitempty"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
+	FinishedAt      *string         `json:"finished_at,omitempty"`
 }
 
 type AgentStep struct {
@@ -76,13 +77,14 @@ type AgentStep struct {
 }
 
 type NewAgentRunInput struct {
-	IntentID        *string
-	EmployeeID      *string
-	Goal            string
-	ToolAllowlist   []string
-	SelectedSkills  []string
-	MaxSteps        int
-	MemorySnapshot  json.RawMessage
+	IntentID       *string
+	EmployeeID     *string
+	ScheduleID     *string
+	Goal           string
+	ToolAllowlist  []string
+	SelectedSkills []string
+	MaxSteps       int
+	MemorySnapshot json.RawMessage
 }
 
 type AgentsStore struct {
@@ -91,7 +93,7 @@ type AgentsStore struct {
 }
 
 func (s *AgentsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,employee_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
+	return "id,user_id,intent_id,employee_id,schedule_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
 }
 
 func (s *AgentsStore) selectStepColumns() string {
@@ -138,6 +140,9 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	}
 	if in.EmployeeID != nil && *in.EmployeeID != "" {
 		body["employee_id"] = *in.EmployeeID
+	}
+	if in.ScheduleID != nil && *in.ScheduleID != "" {
+		body["schedule_id"] = *in.ScheduleID
 	}
 
 	var rows []AgentRun
@@ -236,6 +241,35 @@ func (s *AgentsStore) ListByEmployee(ctx context.Context, userID, employeeID str
 	q.Set("select", s.selectRunColumns())
 	q.Set("user_id", "eq."+userID)
 	q.Set("employee_id", "eq."+employeeID)
+	q.Set("order", "created_at.desc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	var rows []AgentRun
+	if err := s.DB.Get(ctx, "agent_runs", q, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []AgentRun{}
+	}
+	return rows, nil
+}
+
+func (s *AgentsStore) ListBySchedule(ctx context.Context, userID, scheduleID string, limit int) ([]AgentRun, error) {
+	if s == nil || !s.Enabled || s.DB == nil {
+		return nil, fmt.Errorf("agents_disabled")
+	}
+	if strings.TrimSpace(scheduleID) == "" {
+		return nil, fmt.Errorf("schedule_id_required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	q := url.Values{}
+	q.Set("select", s.selectRunColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("schedule_id", "eq."+scheduleID)
 	q.Set("order", "created_at.desc")
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	var rows []AgentRun
@@ -381,8 +415,8 @@ func (s *AgentsStore) Cancel(ctx context.Context, userID, runID string) (AgentRu
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	return s.Patch(ctx, userID, runID, map[string]any{
-		"status":      AgentStatusCancelled,
-		"finished_at": now,
+		"status":           AgentStatusCancelled,
+		"finished_at":      now,
 		"redirect_pending": nil,
 	})
 }

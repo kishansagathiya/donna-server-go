@@ -40,6 +40,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/schedules"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/skills"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
 	ttspkg "github.com/kishansagathiya/donna/donna-server-go/internal/tts"
@@ -159,17 +160,32 @@ func main() {
 		agentSkillProv = skillProvider
 	}
 	employeesStore := &storage.EmployeesStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
+	schedulesStore := &storage.SchedulesStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
 	var employeeWriter agents.EmployeeProgressWriter
 	if employeesStore.Enabled {
 		employeeWriter = employeesStore
 	}
-	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL, agentSkillProv, employeeWriter)
+	var calendarProposer agents.CalendarProposer
+	if actionsStore.Enabled {
+		calendarProposer = &agents.ActionsCalendarProposer{Store: actionsStore}
+	}
+	var factWriter agents.FactWriter
+	if kbStore.Enabled {
+		factWriter = kbStore
+	}
+	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL, agentSkillProv, employeeWriter, agents.Phase3Tools{
+		Facts:    factWriter,
+		Calendar: calendarProposer,
+	})
 	if cfg.CloudAgentsEnabled {
 		log.Print("cloud agents tools", map[string]any{
 			"count":      agentRegistry.Len(),
 			"browserUrl": cfg.BrowserURL != "",
 			"skills":     skillProvider != nil,
 			"employees":  employeesStore.Enabled,
+			"schedules":  schedulesStore.Enabled,
+			"facts":      factWriter != nil,
+			"calendar":   calendarProposer != nil,
 		})
 	}
 	agentHarness := &agents.Harness{
@@ -185,12 +201,21 @@ func main() {
 		Spawner: agentSpawner,
 		Jobs:    jobStore,
 	}
+	scheduleService := &schedules.Service{
+		Store:   schedulesStore,
+		Agents:  agentsStore,
+		Spawner: agentSpawner,
+	}
 	agentWorker := &agents.Worker{
-		Store:    agentsStore,
-		Harness:  agentHarness,
-		AfterRun: employeeService.AfterAgentRun,
+		Store:   agentsStore,
+		Harness: agentHarness,
+		AfterRun: func(ctx context.Context, run storage.AgentRun) {
+			employeeService.AfterAgentRun(ctx, run)
+			scheduleService.AfterAgentRun(ctx, run)
+		},
 	}
 	employeeScheduler := &employees.Scheduler{Service: employeeService}
+	scheduleScheduler := &schedules.Scheduler{Service: scheduleService}
 
 	if cfg.BackgroundJobsEnabled {
 		enricher := &notes.SmartTagEnricher{Store: notesStore, LLM: llm, Flags: flagResolver}
@@ -237,6 +262,9 @@ func main() {
 	}
 	if cfg.CloudAgentsEnabled && employeesStore.Enabled {
 		employeeScheduler.Start()
+	}
+	if cfg.CloudAgentsEnabled && schedulesStore.Enabled {
+		scheduleScheduler.Start()
 	}
 	chatgptImportWorker.Notes = noteSync
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
@@ -394,6 +422,10 @@ func main() {
 		employeesHandler := &employees.Handler{Service: employeeService, Store: employeesStore, Agents: agentsStore}
 		employees.RegisterRoutes(r, authMiddleware, employeesHandler)
 		log.Print("ai employees: /employees enabled", nil)
+
+		schedulesHandler := &schedules.Handler{Service: scheduleService, Store: schedulesStore, Agents: agentsStore}
+		schedules.RegisterRoutes(r, authMiddleware, schedulesHandler)
+		log.Print("scheduled goals: /schedules enabled", nil)
 	}
 
 	if skillsStore.Enabled {

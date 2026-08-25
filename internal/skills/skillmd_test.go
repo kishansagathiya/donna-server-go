@@ -97,6 +97,9 @@ func TestBundledSkillsValid(t *testing.T) {
 	if _, ok := System("web-research"); !ok {
 		t.Fatal("expected web-research bundled skill")
 	}
+	if _, ok := System("booking-proposal"); !ok {
+		t.Fatal("expected booking-proposal bundled skill")
+	}
 	if _, ok := System("nope"); ok {
 		t.Fatal("unknown system skill should miss")
 	}

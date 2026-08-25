@@ -74,6 +74,7 @@ type SpawnInput struct {
 	GroundedGoal   string // optional LLM-facing goal (attachments grounded); falls back to Goal
 	IntentID       *string
 	EmployeeID     *string
+	ScheduleID     *string
 	ToolAllowlist  []string
 	SelectedSkills []string
 	MaxSteps       int
@@ -93,7 +94,7 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	}
 	allow := in.ToolAllowlist
 	if len(allow) == 0 {
-		allow = []string{"orchestration", "memory", "web", "browser", "skills"}
+		allow = []string{"orchestration", "memory", "web", "browser", "skills", "commerce"}
 	}
 
 	// Validate user-selected skills (names must resolve; user skills shadow
@@ -181,6 +182,7 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	run, err := s.Store.Create(ctx, userID, storage.NewAgentRunInput{
 		IntentID:       in.IntentID,
 		EmployeeID:     in.EmployeeID,
+		ScheduleID:     in.ScheduleID,
 		Goal:           goal,
 		ToolAllowlist:  allow,
 		SelectedSkills: selected,
@@ -209,9 +211,9 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 
 // Worker handles background_jobs of type agent_run.
 type Worker struct {
-	Store      *storage.AgentsStore
-	Harness    *Harness
-	AfterRun   func(ctx context.Context, run storage.AgentRun)
+	Store    *storage.AgentsStore
+	Harness  *Harness
+	AfterRun func(ctx context.Context, run storage.AgentRun)
 }
 
 func (w *Worker) HandleJob(ctx context.Context, job storage.BackgroundJob) error {

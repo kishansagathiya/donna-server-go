@@ -14,7 +14,9 @@ import (
 // When browserURL is set (donna-browser sidecar), browse_page is registered.
 // When prov is non-nil (skills enabled), skills tools are registered.
 // When employees is non-nil, report_progress / complete_goal are registered.
-func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider, employees EmployeeProgressWriter) *Registry {
+// Optional Phase3Tools registers write_memory_fact / propose_calendar_event;
+// search_flights always registers (unconfigured partner is an honest stub).
+func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider, employees EmployeeProgressWriter, phase3 ...Phase3Tools) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
 	reg.Register(askUserTool())
@@ -39,6 +41,17 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, 
 		for _, t := range employeeTools(employees) {
 			reg.Register(t)
 		}
+	}
+	reg.Register(searchFlightsTool())
+	var p Phase3Tools
+	if len(phase3) > 0 {
+		p = phase3[0]
+	}
+	if p.Facts != nil {
+		reg.Register(writeMemoryFactTool(p.Facts))
+	}
+	if p.Calendar != nil {
+		reg.Register(proposeCalendarEventTool(p.Calendar))
 	}
 	return reg
 }
@@ -140,13 +153,16 @@ func requestApprovalTool() RegisteredTool {
 			Type: "function",
 			Function: providers.ToolFunctionSchema{
 				Name:        "request_approval",
-				Description: "Pause the agent and ask the user to approve an irreversible step (payment, booking, send). Provide a clear summary.",
+				Description: "Pause the agent and ask the user to approve an irreversible step (payment, booking, send). For bookings, put itinerary/price in details so the UI can show a proposal card. Never include card numbers, CVV, or passwords. Donna cannot charge a card.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"kind":    map[string]any{"type": "string", "description": "e.g. book_flight, pay, send_email"},
+						"kind":    map[string]any{"type": "string", "description": "e.g. book_flight, book_hotel, pay, send_email"},
 						"summary": map[string]any{"type": "string"},
-						"details": map[string]any{"type": "object"},
+						"details": map[string]any{
+							"type":        "object",
+							"description": "Structured proposal for the approval card: itinerary, total, currency, airline, dates, passengers, source_url. Omit unknowns. Never payment secrets.",
+						},
 					},
 					"required": []string{"kind", "summary"},
 				},

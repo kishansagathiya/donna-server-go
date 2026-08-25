@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	DefaultMaxSteps   = 80
-	DefaultWallClock  = 20 * time.Minute
-	DefaultLease      = 2 * time.Minute
-	DefaultMaxTokens  = 24_000 // approximate chars/4 budget for working transcript
-	compressKeepHead  = 2
-	compressKeepTail  = 8
+	DefaultMaxSteps  = 80
+	DefaultWallClock = 20 * time.Minute
+	DefaultLease     = 2 * time.Minute
+	DefaultMaxTokens = 24_000 // approximate chars/4 budget for working transcript
+	compressKeepHead = 2
+	compressKeepTail = 8
 )
 
 // Completer is the LLM surface the harness needs (mockable in tests).
@@ -469,7 +469,10 @@ Rules:
 - Skills listed in the system prompt may help: call load_skill(name) to get a skill's full instructions and follow them when they apply. User-selected skills are already included in full — follow them.
 - When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply UI after ask_user.
 - Whenever the answer is one of a few discrete choices (airports, dates, yes/no, airlines, seat prefs, which note/photo), include an options array with short labels. Set allow_multiple true only when they may pick more than one. Prefer taps over typing.
-- When you need irreversible approval (pay, book, send), call request_approval and stop.
+- When you need irreversible approval (pay, book, send), call request_approval and stop. For flights/hotels/purchases, fill details with itinerary, total, currency, airline/vendor, dates, and source_url. Never invent prices or a completed booking.
+- search_flights has no live partner until configured — treat an unconfigured result as a research hint, then fetch_url/browse_page, then request_approval. Never treat tool output as a paid ticket.
+- Never store payment card numbers, CVV, passwords, or checkout tokens in memory, skills, or approval details. Donna cannot charge a card.
+- After the user approves a booking, call propose_calendar_event, write_memory_fact for durable prefs (not fares), and save_skill if the procedure is reusable. Calendar writes still need a separate Confirm in Actions.
 - On AI employee shifts: call report_progress before wrapping up; call complete_goal only when the ongoing goal is fully achieved.
 - When the goal is complete, reply with a clear final summary and no further tool calls.
 - Never invent confirmations, bookings, or private facts not grounded in tool results.`)
