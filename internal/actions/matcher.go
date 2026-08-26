@@ -98,7 +98,7 @@ func (m *Matcher) MatchIntent(ctx context.Context, userID string, intent storage
 	}
 
 	input := buildRunInput(intent, action.Slug)
-	if action.Slug == "create_calendar_event" && m.Preferences != nil {
+	if (action.Slug == "create_calendar_event" || action.Slug == "propose_reminder") && m.Preferences != nil {
 		if tz, err := m.Preferences.GetTimezone(ctx, userID); err == nil {
 			if tz = strings.TrimSpace(tz); tz != "" {
 				input["timezone"] = tz

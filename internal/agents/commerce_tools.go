@@ -14,8 +14,14 @@ import (
 
 // Phase3Tools are optional commerce / write-back tools (booking + cron follow-through).
 type Phase3Tools struct {
-	Facts    FactWriter
-	Calendar CalendarProposer
+	Facts     FactWriter
+	Calendar  CalendarProposer
+	Reminders ReminderCreator
+}
+
+// ReminderCreator sets a timed reminder immediately (reversible; user can cancel).
+type ReminderCreator interface {
+	SetReminder(ctx context.Context, userID, title, when, notes, timezone string) (id string, dueAt string, err error)
 }
 
 // FactWriter persists a user-approved memory fact from an agent run.
@@ -347,6 +353,54 @@ func proposeCalendarEventTool(proposer CalendarProposer) RegisteredTool {
 					"intent_id":     intentID,
 					"title":         strings.TrimSpace(args.Title),
 				},
+			}, nil
+		},
+	}
+}
+
+func setReminderTool(creator ReminderCreator) RegisteredTool {
+	return RegisteredTool{
+		Toolset: "commerce",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        "set_reminder",
+				Description: "Set a timed reminder for the user immediately (in 10 minutes, tomorrow 4pm, etc.). Confirm the scheduled time. The user can cancel it later in Reminders.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":    map[string]any{"type": "string"},
+						"when":     map[string]any{"type": "string", "description": "When to fire, e.g. in 10 minutes, tomorrow 4pm"},
+						"notes":    map[string]any{"type": "string"},
+						"timezone": map[string]any{"type": "string"},
+					},
+					"required": []string{"title"},
+				},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			args, err := ParseArgs[struct {
+				Title    string `json:"title"`
+				When     string `json:"when"`
+				Notes    string `json:"notes"`
+				Timezone string `json:"timezone"`
+			}](argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if creator == nil {
+				return ToolResult{Content: "Error: reminders_unavailable"}, nil
+			}
+			if runCtx == nil || strings.TrimSpace(runCtx.UserID) == "" {
+				return ToolResult{Content: "Error: missing_user"}, nil
+			}
+			id, dueAt, err := creator.SetReminder(ctx, runCtx.UserID, args.Title, args.When, args.Notes, args.Timezone)
+			if err != nil {
+				return ToolResult{Content: "Error: " + err.Error()}, nil
+			}
+			return ToolResult{
+				Content: fmt.Sprintf("Reminder set: %q at %s (id %s).", strings.TrimSpace(args.Title), dueAt, id),
+				Meta:    map[string]any{"reminder_id": id, "due_at": dueAt, "title": strings.TrimSpace(args.Title)},
 			}, nil
 		},
 	}

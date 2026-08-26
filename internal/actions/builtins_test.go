@@ -31,8 +31,12 @@ func TestBuiltinProposeReminder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if out.Output["title"] != "Call Mom" {
+		t.Fatalf("unexpected title: %#v", out.Output)
+	}
+	// Persistence happens in Executor via ReminderEffects, not the dry-run builtin.
 	if out.Output["scheduled"] != false {
-		t.Fatalf("reminder must not auto-schedule: %#v", out.Output)
+		t.Fatalf("builtin dry-run must not claim scheduled: %#v", out.Output)
 	}
 }
 

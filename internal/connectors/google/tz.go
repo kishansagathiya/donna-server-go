@@ -27,6 +27,11 @@ var fixedZones = map[string]*time.Location{
 	"Pacific/Auckland":    time.FixedZone("Pacific/Auckland", 12*3600),
 }
 
+// LoadTZ resolves an IANA timezone even when the OS zoneinfo DB is absent.
+func LoadTZ(name string) (*time.Location, error) {
+	return loadLocation(name)
+}
+
 // loadLocation resolves an IANA timezone even when the OS zoneinfo DB is absent.
 func loadLocation(name string) (*time.Location, error) {
 	name = strings.TrimSpace(name)

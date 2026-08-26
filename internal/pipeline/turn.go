@@ -63,6 +63,8 @@ type Engine struct {
 	// ConnectorTools optionally adds per-user live connector tools for text chat.
 	ConnectorTools  ConnectorToolsFunc
 	ConnectorPrompt string
+	// ExtraToolsPrompt is appended whenever chat tools are enabled (reminders, etc).
+	ExtraToolsPrompt string
 }
 
 // RunVoiceTurn transcribes buffered voice audio. Talk-mode chat replies go

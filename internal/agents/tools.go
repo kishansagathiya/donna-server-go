@@ -59,6 +59,9 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, 
 	if p.Calendar != nil {
 		reg.Register(proposeCalendarEventTool(p.Calendar))
 	}
+	if p.Reminders != nil {
+		reg.Register(setReminderTool(p.Reminders))
+	}
 	return reg
 }
 

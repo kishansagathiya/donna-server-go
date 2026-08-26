@@ -100,6 +100,9 @@ func (e *Engine) RunTextTurn(
 	toolsEnabled := e.Config != nil && e.Config.ChatToolsEnabled && turnTools != nil && turnTools.Len() > 0
 	if toolsEnabled {
 		systemPrompt = systemPrompt + "\n\n" + tools.BrowseToolsPrompt
+		if e.ExtraToolsPrompt != "" {
+			systemPrompt = systemPrompt + "\n\n" + e.ExtraToolsPrompt
+		}
 		if e.ConnectorPrompt != "" && registryHasPrefix(turnTools, "granola_") {
 			systemPrompt = systemPrompt + "\n\n" + e.ConnectorPrompt
 		}

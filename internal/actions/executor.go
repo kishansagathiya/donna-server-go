@@ -16,10 +16,16 @@ type IntegrationEffects interface {
 	SendEmail(ctx context.Context, userID string, input map[string]any) (map[string]any, error)
 }
 
+// ReminderEffects persists confirmed reminder actions.
+type ReminderEffects interface {
+	CreateFromAction(ctx context.Context, userID, actionRunID string, input map[string]any) (map[string]any, error)
+}
+
 type Executor struct {
 	Store        *storage.ActionsStore
 	Builtin      *BuiltinRunner
 	Integrations IntegrationEffects
+	Reminders    ReminderEffects
 	// ResumeAgent requeues a waiting cloud agent after ledger confirm/deny.
 	ResumeAgent func(ctx context.Context, userID, runID, note string) error
 }
@@ -117,7 +123,13 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 		output map[string]any
 		runErr error
 	)
-	if IsIntegrationBuiltin(builtinName) {
+	if builtinName == BuiltinProposeReminder {
+		if e.Reminders == nil {
+			runErr = fmt.Errorf("reminders_unavailable")
+		} else {
+			output, runErr = e.Reminders.CreateFromAction(ctx, userID, run.ID, input)
+		}
+	} else if IsIntegrationBuiltin(builtinName) {
 		output, runErr = e.runIntegration(ctx, userID, builtinName, input)
 	} else {
 		if e.Builtin == nil {
