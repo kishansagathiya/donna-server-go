@@ -12,20 +12,20 @@ import (
 
 // kindToActionSlug maps extracted intent kinds to system action slugs.
 var kindToActionSlug = map[string]string{
-	"remind":         "propose_reminder",
-	"reminder":       "propose_reminder",
-	"propose_reminder": "propose_reminder",
-	"follow_up":      "draft_message",
-	"followup":       "draft_message",
-	"draft_message":  "draft_message",
-	"message":        "draft_message",
-	"email":          "send_email",
-	"send_email":     "send_email",
-	"schedule":       "create_calendar_event",
-	"calendar":       "create_calendar_event",
+	"remind":                "propose_reminder",
+	"reminder":              "propose_reminder",
+	"propose_reminder":      "propose_reminder",
+	"follow_up":             "draft_message",
+	"followup":              "draft_message",
+	"draft_message":         "draft_message",
+	"message":               "draft_message",
+	"email":                 "send_email",
+	"send_email":            "send_email",
+	"schedule":              "create_calendar_event",
+	"calendar":              "create_calendar_event",
 	"create_calendar_event": "create_calendar_event",
-	"open_url":       "open_url",
-	"url":            "open_url",
+	"open_url":              "open_url",
+	"url":                   "open_url",
 }
 
 type Matcher struct {
@@ -65,7 +65,7 @@ func (m *Matcher) MatchIntent(ctx context.Context, userID string, intent storage
 	}
 
 	input := buildRunInput(intent, action.Slug)
-	if action.Slug == "create_calendar_event" && m.Preferences != nil {
+	if (action.Slug == "create_calendar_event" || action.Slug == "propose_reminder") && m.Preferences != nil {
 		if tz, err := m.Preferences.GetTimezone(ctx, userID); err == nil {
 			if tz = strings.TrimSpace(tz); tz != "" {
 				input["timezone"] = tz

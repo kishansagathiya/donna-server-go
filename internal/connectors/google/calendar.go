@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	calendarEventsURL      = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-	calendarPrimaryURL     = "https://www.googleapis.com/calendar/v3/calendars/primary"
-	calendarTimezoneURL    = "https://www.googleapis.com/calendar/v3/users/me/settings/timezone"
-	defaultEventHour       = 9
-	defaultEventMinutes    = 0
+	calendarEventsURL   = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+	calendarPrimaryURL  = "https://www.googleapis.com/calendar/v3/calendars/primary"
+	calendarTimezoneURL = "https://www.googleapis.com/calendar/v3/users/me/settings/timezone"
+	defaultEventHour    = 9
+	defaultEventMinutes = 0
 )
 
 type calendarEventRequest struct {
@@ -171,6 +171,12 @@ func (a *Adapter) resolveCalendarTimezone(ctx context.Context, client *http.Clie
 func isUTCName(tz string) bool {
 	tz = strings.TrimSpace(tz)
 	return tz == "" || strings.EqualFold(tz, "UTC") || strings.EqualFold(tz, "Etc/UTC") || strings.EqualFold(tz, "Etc/GMT")
+}
+
+// ParseWhen parses a natural-language or absolute datetime in loc.
+// Used by reminders as well as calendar event scheduling.
+func ParseWhen(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
+	return parseFlexibleTime(raw, now, loc)
 }
 
 func (a *Adapter) fetchPrimaryTimezone(ctx context.Context, client *http.Client, accessToken string) (string, error) {
@@ -431,11 +437,11 @@ func richerTimeFromText(text, clock string) string {
 }
 
 var (
-	reInDuration = regexp.MustCompile(`(?i)^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)$`)
-	reAtClock    = regexp.MustCompile(`(?i)(?:\bat\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\b|(?i)\b(\d{1,2}):(\d{2})\b`)
-	reClockOnly  = regexp.MustCompile(`(?i)^(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$`)
-	reWeekday    = regexp.MustCompile(`(?i)\b(next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b`)
-	reMonthName  = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b`)
+	reInDuration   = regexp.MustCompile(`(?i)^in\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)$`)
+	reAtClock      = regexp.MustCompile(`(?i)(?:\bat\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|(?i)\bat\s+(\d{1,2})(?::(\d{2}))?\b|(?i)\b(\d{1,2}):(\d{2})\b`)
+	reClockOnly    = regexp.MustCompile(`(?i)^(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$`)
+	reWeekday      = regexp.MustCompile(`(?i)\b(next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b`)
+	reMonthName    = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b`)
 	reMonthDayYear = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b`)
 	reDayMonthYear = regexp.MustCompile(`(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)(?:,)?\s+(\d{4})\b`)
 	reMonthDay     = regexp.MustCompile(`(?i)\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\b`)

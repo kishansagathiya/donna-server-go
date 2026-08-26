@@ -40,6 +40,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/providers"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/reminders"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/schedules"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/skills"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
@@ -161,6 +162,8 @@ func main() {
 	}
 	employeesStore := &storage.EmployeesStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
 	schedulesStore := &storage.SchedulesStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
+	remindersStore := &storage.RemindersStore{DB: supa, Enabled: supa.Enabled()}
+	reminderService := &reminders.Service{Store: remindersStore, Preferences: preferencesStore}
 	var employeeWriter agents.EmployeeProgressWriter
 	if employeesStore.Enabled {
 		employeeWriter = employeesStore
@@ -173,9 +176,14 @@ func main() {
 	if kbStore.Enabled {
 		factWriter = kbStore
 	}
+	var reminderCreator agents.ReminderCreator
+	if remindersStore.Enabled {
+		reminderCreator = reminderService
+	}
 	agentRegistry := agents.DefaultToolsets(memBridge, notesBridge, cfg.BrowserURL, agentSkillProv, employeeWriter, agents.Phase3Tools{
-		Facts:    factWriter,
-		Calendar: calendarProposer,
+		Facts:     factWriter,
+		Calendar:  calendarProposer,
+		Reminders: reminderCreator,
 	})
 	if cfg.CloudAgentsEnabled {
 		log.Print("cloud agents tools", map[string]any{
@@ -239,7 +247,7 @@ func main() {
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 	ingestpkg.SetBrowserBaseURL(cfg.BrowserURL)
 
-	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}}
+	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}, Reminders: reminderService}
 	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false}
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
@@ -265,6 +273,10 @@ func main() {
 	}
 	if cfg.CloudAgentsEnabled && schedulesStore.Enabled {
 		scheduleScheduler.Start()
+	}
+	reminderScheduler := &reminders.Scheduler{Store: reminderService}
+	if remindersStore.Enabled {
+		reminderScheduler.Start()
 	}
 	chatgptImportWorker.Notes = noteSync
 	convStore.OnTurnPersisted = func(input storage.SaveTurnInput) {
@@ -350,15 +362,24 @@ func main() {
 		Flags:       flagResolver,
 		Tools:       chatTools,
 	}
+	engine.ConnectorTools = func(ctx context.Context, userID string, base *tools.Registry) *tools.Registry {
+		extra := []tools.RegisteredTool{}
+		if reminderService != nil && remindersStore.Enabled {
+			extra = append(extra, reminders.SetReminderChatTool(userID, reminderService))
+		}
+		if connectorSvc != nil {
+			extra = append(extra, connectors.LoadLiveToolsForUser(ctx, connectorSvc, userID)...)
+		}
+		if len(extra) == 0 {
+			return base
+		}
+		return connectors.MergeUserTools(base, extra)
+	}
 	if connectorSvc != nil {
 		engine.ConnectorPrompt = connectors.ConnectorToolsPrompt
-		engine.ConnectorTools = func(ctx context.Context, userID string, base *tools.Registry) *tools.Registry {
-			live := connectors.LoadLiveToolsForUser(ctx, connectorSvc, userID)
-			if len(live) == 0 {
-				return base
-			}
-			return connectors.MergeUserTools(base, live)
-		}
+	}
+	if remindersStore.Enabled {
+		engine.ExtraToolsPrompt = reminders.ChatToolPrompt
 	}
 
 	r := chi.NewRouter()
@@ -413,6 +434,12 @@ func main() {
 
 	actionsHandler := &actions.Handler{Store: actionsStore, Executor: actionExecutor}
 	actions.RegisterRoutes(r, authMiddleware, actionsHandler)
+
+	if remindersStore.Enabled {
+		remindersHandler := &reminders.Handler{Service: reminderService, Store: remindersStore}
+		reminders.RegisterRoutes(r, authMiddleware, remindersHandler)
+		log.Print("reminders: GET/POST /reminders, PATCH /reminders/{id}, POST /reminders/{id}/cancel|dismiss", nil)
+	}
 
 	if cfg.CloudAgentsEnabled {
 		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase}
@@ -538,6 +565,7 @@ func main() {
 	log.Print("notes: GET /notes/search, POST /notes/daily-check, web-only CRUD at /notes/*", nil)
 	log.Print("intents: GET /intents, POST /intents/{id}/dismiss", nil)
 	log.Print("action-runs: GET /action-runs, POST /action-runs/{id}/confirm|cancel", nil)
+	log.Print("reminders: GET/POST /reminders", nil)
 	log.Print("memory: GET/PATCH /memory/profile, CRUD /memory/facts, review /memory/items|suggestions|feedback", nil)
 	log.Print("chat: POST /chat (text, optional ?stream=1 for SSE)", nil)
 	log.Print("tts: POST /tts (synthesize assistant reply audio, cached in conversation-audio)", nil)

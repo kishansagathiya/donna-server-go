@@ -99,6 +99,40 @@ func TestProposeCalendarEvent(t *testing.T) {
 	}
 }
 
+type fakeReminders struct {
+	title string
+	when  string
+	err   error
+}
+
+func (f *fakeReminders) SetReminder(ctx context.Context, userID, title, when, notes, timezone string) (string, string, error) {
+	f.title = title
+	f.when = when
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return "rem-1", "2026-08-26T18:00:00Z", nil
+}
+
+func TestSetReminderTool(t *testing.T) {
+	fake := &fakeReminders{}
+	reg := DefaultToolsets(nil, nil, "", nil, nil, Phase3Tools{Reminders: fake})
+	tool, ok := reg.Get("set_reminder")
+	if !ok {
+		t.Fatal("expected set_reminder tool")
+	}
+	res, err := tool.Handle(context.Background(), &RunContext{UserID: "u1"}, `{"title":"Call Mom","when":"tomorrow 4pm"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.title != "Call Mom" || fake.when != "tomorrow 4pm" {
+		t.Fatalf("got title=%q when=%q", fake.title, fake.when)
+	}
+	if !strings.Contains(res.Content, "Call Mom") {
+		t.Fatalf("content: %s", res.Content)
+	}
+}
+
 func TestNextScheduleAt(t *testing.T) {
 	from := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
 	if _, ok := storage.NextScheduleAt(0, from); ok {
