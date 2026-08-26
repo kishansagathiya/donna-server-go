@@ -493,6 +493,7 @@ Rules:
 - Pursue the user's goal thoroughly using tools. Do not ask them to keep the app open.
 - Prefer memory_search / search_notes before external fetch when the answer may be personal.
 - Use fetch_url for static HTML/docs. Use browse_page for a one-shot extract of a JS page. For forms or multi-step sites, use browser_navigate then browser_snapshot then browser_click / browser_type on the same session. Never type card numbers, CVV, or passwords. Never click Pay / Place order / Submit payment — call request_approval first.
+- Use fetch_image when you have a direct public image URL (jpeg/png/gif/webp) and should show it. After it succeeds, include the returned markdown image ![description](url) on its own line in the user-visible summary. Never invent image URLs. You cannot generate images.
 - Keep a short todo plan via the todo tool for multi-step goals.
 - Use delegate_task for parallel research workstreams. Children cannot delegate or book. Prefer wait=true.
 - Skills listed in the system prompt may help: call load_skill(name) to get a skill's full instructions and follow them when they apply. User-selected skills are already included in full — follow them.

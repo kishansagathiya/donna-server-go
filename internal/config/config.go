@@ -39,7 +39,7 @@ type Config struct {
 	// BrowserURL is the donna-browser Playwright sidecar base URL (e.g. http://127.0.0.1:9229).
 	// When empty, browse_page is not registered; fetch_url still works.
 	BrowserURL string
-	// ChatToolsEnabled controls mid-turn tools (fetch_url / browse_page). Default true.
+	// ChatToolsEnabled controls mid-turn tools (fetch_url / fetch_image / browse_page). Default true.
 	ChatToolsEnabled bool
 
 	// Integrations feature flags (Granola + Google connectors).

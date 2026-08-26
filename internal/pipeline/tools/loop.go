@@ -143,10 +143,10 @@ func RunToolLoop(
 			for _, call := range meta.ToolCalls {
 				name := strings.TrimSpace(call.Function.Name)
 				switch name {
-				case "fetch_url":
+				case "fetch_url", "fetch_image":
 					fetchCalls++
 					if fetchCalls > limits.MaxFetchCalls {
-						working = append(working, toolMessage(call, "Error: fetch_url call limit reached for this turn"))
+						working = append(working, toolMessage(call, "Error: fetch call limit reached for this turn"))
 						continue
 					}
 				case "browse_page":
@@ -324,6 +324,8 @@ func peekToolStatus(name, argsJSON string) (protocol.TurnPhase, string) {
 	switch strings.TrimSpace(name) {
 	case "fetch_url":
 		return protocol.TurnPhaseFetching, peekArgHost(argsJSON)
+	case "fetch_image":
+		return protocol.TurnPhaseLoadingImage, peekArgHost(argsJSON)
 	case "browse_page":
 		return protocol.TurnPhaseBrowsing, peekArgHost(argsJSON)
 	default:
@@ -385,7 +387,8 @@ func appendCitations(existing []Citation, extra []Citation) []Citation {
 }
 
 // BrowseToolsPrompt is appended to the system prompt when tools are available.
-const BrowseToolsPrompt = `You can use tools to read websites when needed:
+const BrowseToolsPrompt = `You can use tools to read websites and show images when needed:
 - fetch_url: prefer for static HTML, docs, and blogs.
 - browse_page: use when fetch_url fails or the page needs JavaScript (only if available).
+- fetch_image: use when you have a direct public image URL (jpeg/png/gif/webp) and should show it to the user. After it succeeds, include the returned markdown image (` + "`![description](url)`" + `) on its own line in your reply. Never invent image URLs. You cannot generate images.
 Do not browse localhost, private networks, or file URLs. Cite the pages you read. Do not invent page content.`

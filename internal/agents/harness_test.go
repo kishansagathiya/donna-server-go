@@ -54,6 +54,19 @@ func TestDefaultToolsetsRegistersBrowseWhenConfigured(t *testing.T) {
 	if _, ok := with.Get("fetch_url"); !ok {
 		t.Fatal("fetch_url should always register")
 	}
+	if _, ok := with.Get("fetch_image"); !ok {
+		t.Fatal("fetch_image should always register")
+	}
+}
+
+func TestImageURLFromToolContent(t *testing.T) {
+	got := imageURLFromToolContent("Verified public image.\n\nURL: https://example.com/a.png\nMIME: image/png\n")
+	if got != "https://example.com/a.png" {
+		t.Fatalf("got %q", got)
+	}
+	if imageURLFromToolContent("no url here") != "" {
+		t.Fatal("expected empty")
+	}
 }
 
 func TestCompressIfNeeded(t *testing.T) {
