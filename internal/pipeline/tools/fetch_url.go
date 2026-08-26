@@ -18,7 +18,7 @@ func FetchURLDefinition() providers.ToolDefinition {
 		Type: "function",
 		Function: providers.ToolFunctionSchema{
 			Name:        "fetch_url",
-			Description: "Fetch a public HTTP(S) page and return extracted text. Prefer for static HTML, docs, blogs, and Twitter/X status links. If the result is empty or clearly incomplete (JS-heavy SPA), use browse_page instead when available.",
+			Description: "Fetch a public HTTP(S) page and return extracted text. Prefer for static HTML, docs, blogs, and Twitter/X status links. Direct image URLs (jpeg/png/gif/webp) are handled like fetch_image. If the result is empty or clearly incomplete (JS-heavy SPA), use browse_page instead when available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -38,6 +38,10 @@ func FetchURLDefinition() providers.ToolDefinition {
 }
 
 func NewFetchURLHandler() Handler {
+	return newFetchURLHandler(NewFetchImageHandler())
+}
+
+func newFetchURLHandler(images Handler) Handler {
 	return func(ctx context.Context, argsJSON string) (Result, error) {
 		var args struct {
 			URL      string `json:"url"`
@@ -49,6 +53,9 @@ func NewFetchURLHandler() Handler {
 		parsed, err := ValidatePublicURL(args.URL)
 		if err != nil {
 			return Result{Content: "Error: " + err.Error()}, nil
+		}
+		if images != nil && LooksLikeImageURL(parsed) {
+			return images(ctx, argsJSON)
 		}
 
 		extracted, err := ingest.ExtractURL(parsed.String())

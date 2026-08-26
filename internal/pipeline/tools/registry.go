@@ -64,6 +64,10 @@ func DefaultRegistry(browserURL string) *Registry {
 		Definition: FetchURLDefinition(),
 		Handle:     NewFetchURLHandler(),
 	})
+	reg.Register(RegisteredTool{
+		Definition: FetchImageDefinition(),
+		Handle:     NewFetchImageHandler(),
+	})
 	if client := NewBrowserClient(browserURL); client != nil {
 		reg.Register(RegisteredTool{
 			Definition: BrowsePageDefinition(),

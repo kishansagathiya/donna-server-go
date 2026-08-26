@@ -54,6 +54,19 @@ func TestDefaultToolsetsRegistersBrowseWhenConfigured(t *testing.T) {
 	if _, ok := with.Get("fetch_url"); !ok {
 		t.Fatal("fetch_url should always register")
 	}
+	if _, ok := with.Get("fetch_image"); !ok {
+		t.Fatal("fetch_image should always register")
+	}
+}
+
+func TestImageURLFromToolContent(t *testing.T) {
+	got := imageURLFromToolContent("Verified public image.\n\nURL: https://example.com/a.png\nMIME: image/png\n")
+	if got != "https://example.com/a.png" {
+		t.Fatalf("got %q", got)
+	}
+	if imageURLFromToolContent("no url here") != "" {
+		t.Fatal("expected empty")
+	}
 }
 
 func TestCompressIfNeeded(t *testing.T) {
@@ -261,14 +274,14 @@ func (m *memRunStore) WaitForUser(ctx context.Context, userID, runID string, app
 
 func TestHarnessFinalAnswer(t *testing.T) {
 	run := storage.AgentRun{
-		ID:            "run-1",
-		UserID:        "user-1",
-		Goal:          "Find Lisbon photo",
-		Status:        storage.AgentStatusQueued,
-		Plan:          json.RawMessage(`[]`),
+		ID:             "run-1",
+		UserID:         "user-1",
+		Goal:           "Find Lisbon photo",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
 		MemorySnapshot: json.RawMessage(`{}`),
-		MaxSteps:      5,
-		ToolAllowlist: []string{"orchestration"},
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
 	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
@@ -482,14 +495,14 @@ func TestHarnessRequestApprovalPauses(t *testing.T) {
 
 func TestHarnessCancelMidRun(t *testing.T) {
 	run := storage.AgentRun{
-		ID:            "run-3",
-		UserID:        "user-1",
-		Goal:          "Long task",
-		Status:        storage.AgentStatusQueued,
-		Plan:          json.RawMessage(`[]`),
+		ID:             "run-3",
+		UserID:         "user-1",
+		Goal:           "Long task",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
 		MemorySnapshot: json.RawMessage(`{}`),
-		MaxSteps:      10,
-		ToolAllowlist: []string{"orchestration"},
+		MaxSteps:       10,
+		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
 	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{

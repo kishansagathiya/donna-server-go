@@ -28,6 +28,7 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, 
 		reg.Register(searchNotesTool(notes))
 	}
 	reg.Register(fetchURLTool())
+	reg.Register(fetchImageTool())
 	if client := tools.NewBrowserClient(browserURL); client != nil {
 		reg.Register(browsePageTool(client))
 	}
@@ -287,6 +288,38 @@ func fetchURLTool() RegisteredTool {
 			return ToolResult{Content: res.Content, Meta: map[string]any{"host": res.Host}}, nil
 		},
 	}
+}
+
+func fetchImageTool() RegisteredTool {
+	inner := tools.NewFetchImageHandler()
+	return RegisteredTool{
+		Toolset:    "web",
+		Definition: tools.FetchImageDefinition(),
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			res, err := inner(ctx, argsJSON)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			meta := map[string]any{}
+			if res.Host != "" {
+				meta["host"] = res.Host
+			}
+			if url := imageURLFromToolContent(res.Content); url != "" {
+				meta["image_url"] = url
+			}
+			return ToolResult{Content: res.Content, Meta: meta}, nil
+		},
+	}
+}
+
+func imageURLFromToolContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "URL:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "URL:"))
+		}
+	}
+	return ""
 }
 
 func browsePageTool(client *tools.BrowserClient) RegisteredTool {

@@ -10,7 +10,9 @@ description: How Donna researches open-ended questions on the web — search bro
    personal (preferences, past events, people). Don't search the web for things
    the user already told Donna.
 3. Fetch 2–3 independent sources with `fetch_url` (or `browse_page` when the
-   page needs JavaScript). Prefer primary sources over aggregators.
+   page needs JavaScript). Prefer primary sources over aggregators. When a
+   source gives a direct public image URL that would help the user, call
+   `fetch_image` and embed the returned markdown image in the summary.
 4. Cross-check any number, date, price, or name across at least two sources
    before presenting it. If sources disagree, say so explicitly.
 5. Summarize with the answer first, then supporting detail, and name the source

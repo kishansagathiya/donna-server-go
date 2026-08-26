@@ -14,6 +14,7 @@ const (
 	TurnPhaseGenerating   TurnPhase = "generating"
 	TurnPhaseAnalyzing    TurnPhase = "analyzing"
 	TurnPhaseFetching     TurnPhase = "fetching"
+	TurnPhaseLoadingImage TurnPhase = "loading_image"
 	TurnPhaseBrowsing     TurnPhase = "browsing"
 	TurnPhaseSynthesizing TurnPhase = "synthesizing"
 	TurnPhaseDone         TurnPhase = "done"
