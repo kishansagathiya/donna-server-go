@@ -22,3 +22,14 @@ func TestKindToActionSlug(t *testing.T) {
 		t.Fatal("create_note must not map to an action")
 	}
 }
+
+func TestShouldSpawnCloudAgent(t *testing.T) {
+	for _, kind := range []string{"find_media", "research", "research_and_act", "book_travel"} {
+		if !ShouldSpawnCloudAgent(kind) {
+			t.Fatalf("%s should spawn", kind)
+		}
+	}
+	if ShouldSpawnCloudAgent("schedule") || ShouldSpawnCloudAgent("agent_result") {
+		t.Fatal("builtins / results must not spawn")
+	}
+}

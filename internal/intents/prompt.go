@@ -9,11 +9,12 @@ import (
 const ExtractorSystemPrompt = `You are Donna's intent extractor. You read user-authored notes and conversation turns and extract actionable intents.
 
 Rules:
-- Extract only clear, actionable wishes: remind, follow_up, schedule, draft_message, open_url, or other short snake_case kinds.
+- Extract only clear, actionable wishes: remind, follow_up, schedule, draft_message, open_url, find_media, research, research_and_act, book_travel, or other short snake_case kinds.
 - Skip greetings, pure questions, journaling, and non-actionable reflection.
 - Each intent must have a short human summary and optional slots (JSON object of string values).
 - Prefer fewer high-confidence intents over speculative ones.
 - Never invent a create_note intent. Notes are user-authored only.
+- Never emit agent_result — that kind is written by the server after a scheduled run.
 - Return valid JSON only, no markdown fences.
 
 For schedule intents:
@@ -29,7 +30,10 @@ Examples of slots:
 - remind / propose_reminder: title, when, notes
 - follow_up / draft_message: recipient, body, channel, subject
 - open_url: url, label
-- schedule: title, start, end, when, attendees, location, notes`
+- schedule: title, start, end, when, attendees, location, notes
+- find_media: query, place, when
+- research / research_and_act: query, outcome
+- book_travel: destination, when, constraints`
 
 type ExtractedIntent struct {
 	Kind       string            `json:"kind"`

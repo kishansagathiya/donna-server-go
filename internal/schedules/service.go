@@ -17,6 +17,7 @@ type Service struct {
 	Store   *storage.SchedulesStore
 	Agents  *storage.AgentsStore
 	Spawner *agents.Spawner
+	Intents *storage.ActionsStore
 }
 
 func (s *Service) Create(ctx context.Context, userID string, in storage.NewScheduleInput) (storage.ScheduledAgentGoal, error) {
@@ -57,7 +58,7 @@ func (s *Service) StartRun(ctx context.Context, sch storage.ScheduledAgentGoal) 
 		GroundedGoal:   RunBrief(sch),
 		ScheduleID:     &schID,
 		SelectedSkills: sch.SelectedSkills,
-		ToolAllowlist:  []string{"orchestration", "memory", "web", "browser", "skills", "commerce"},
+		ToolAllowlist:  agents.DefaultParentToolAllowlist(),
 		MaxSteps:       storage.DefaultScheduleMaxSteps,
 	})
 	if err != nil {
@@ -127,6 +128,10 @@ func (s *Service) AfterAgentRun(ctx context.Context, run storage.AgentRun) {
 		_ = s.Store.ClearCurrentRun(ctx, run.UserID, schID, run.ID)
 	}
 
+	if run.Status == storage.AgentStatusSucceeded {
+		s.deliverResult(ctx, run)
+	}
+
 	summary := runSummary(run)
 	patch := map[string]any{}
 	if summary != "" {
@@ -178,4 +183,33 @@ func runSummary(run storage.AgentRun) string {
 		}
 	}
 	return ""
+}
+
+func (s *Service) deliverResult(ctx context.Context, run storage.AgentRun) {
+	if s == nil || s.Intents == nil || !s.Intents.Enabled {
+		return
+	}
+	summary := runSummary(run)
+	if summary == "" {
+		summary = "Scheduled task finished."
+	}
+	goal := strings.TrimSpace(run.Goal)
+	if goal != "" {
+		summary = goal + "\n\n" + summary
+	}
+	if len(summary) > 2000 {
+		summary = summary[:2000]
+	}
+	sourceID := run.ID
+	if _, _, err := s.Intents.UpsertOpenIntent(ctx, run.UserID, storage.NewIntentInput{
+		Kind:       "agent_result",
+		Summary:    summary,
+		SourceType: "agent_run",
+		SourceID:   &sourceID,
+	}); err != nil {
+		log.Warn("schedule result intent failed", map[string]any{
+			"runId": log.ShortID(run.ID),
+			"error": err.Error(),
+		})
+	}
 }

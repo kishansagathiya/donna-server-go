@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
@@ -75,6 +76,7 @@ type SpawnInput struct {
 	IntentID       *string
 	EmployeeID     *string
 	ScheduleID     *string
+	ParentRunID    *string
 	ToolAllowlist  []string
 	SelectedSkills []string
 	MaxSteps       int
@@ -94,7 +96,19 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	}
 	allow := in.ToolAllowlist
 	if len(allow) == 0 {
-		allow = []string{"orchestration", "memory", "web", "browser", "skills", "commerce"}
+		allow = DefaultParentToolAllowlist()
+	}
+	if in.ParentRunID != nil && strings.TrimSpace(*in.ParentRunID) != "" {
+		parent, err := s.Store.Get(ctx, userID, strings.TrimSpace(*in.ParentRunID))
+		if err != nil {
+			return storage.AgentRun{}, err
+		}
+		if parent.ParentRunID != nil && strings.TrimSpace(*parent.ParentRunID) != "" {
+			return storage.AgentRun{}, fmt.Errorf("nested_delegate_forbidden")
+		}
+		if in.MaxSteps <= 0 {
+			in.MaxSteps = 40
+		}
 	}
 
 	// Validate user-selected skills (names must resolve; user skills shadow
@@ -183,6 +197,7 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 		IntentID:       in.IntentID,
 		EmployeeID:     in.EmployeeID,
 		ScheduleID:     in.ScheduleID,
+		ParentRunID:    in.ParentRunID,
 		Goal:           goal,
 		ToolAllowlist:  allow,
 		SelectedSkills: selected,
@@ -207,6 +222,51 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 		}
 	}
 	return run, nil
+}
+
+func (s *Spawner) SpawnFromIntent(ctx context.Context, userID string, intent storage.Intent) error {
+	if s == nil {
+		return fmt.Errorf("agents_disabled")
+	}
+	id := intent.ID
+	goal := strings.TrimSpace(intent.Summary)
+	if goal == "" {
+		goal = strings.TrimSpace(intent.Kind)
+	}
+	_, err := s.Spawn(ctx, userID, SpawnInput{
+		Goal:     goal,
+		IntentID: &id,
+	})
+	return err
+}
+
+func (s *Spawner) WaitUntilDone(ctx context.Context, userID, runID string, timeout time.Duration) (storage.AgentRun, error) {
+	if s == nil || s.Store == nil {
+		return storage.AgentRun{}, fmt.Errorf("agents_disabled")
+	}
+	if timeout <= 0 {
+		timeout = defaultDelegateTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		run, err := s.Store.Get(ctx, userID, runID)
+		if err != nil {
+			return storage.AgentRun{}, err
+		}
+		if storage.IsTerminalAgentStatus(run.Status) || run.Status == storage.AgentStatusWaitingForUser {
+			return run, nil
+		}
+		if time.Now().After(deadline) {
+			return run, fmt.Errorf("delegate_timeout")
+		}
+		select {
+		case <-ctx.Done():
+			return run, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // Worker handles background_jobs of type agent_run.

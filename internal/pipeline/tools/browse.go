@@ -159,3 +159,149 @@ func NewBrowsePageHandler(browser *BrowserClient) Handler {
 		}, nil
 	}
 }
+
+type BrowserElement struct {
+	Ref  string `json:"ref"`
+	Tag  string `json:"tag"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+type BrowserSnapshot struct {
+	URL      string           `json:"url"`
+	Title    string           `json:"title"`
+	Text     string           `json:"text"`
+	Status   int              `json:"status,omitempty"`
+	Elements []BrowserElement `json:"elements"`
+	Error    string           `json:"error,omitempty"`
+}
+
+func (c *BrowserClient) CloseSession(ctx context.Context, sessionID string) error {
+	if c == nil {
+		return nil
+	}
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := c.postJSON(ctx, "/session/close", map[string]any{"session_id": sessionID}, &out); err != nil {
+		return err
+	}
+	if out.Error != "" {
+		return fmt.Errorf("%s", out.Error)
+	}
+	return nil
+}
+
+func (c *BrowserClient) Navigate(ctx context.Context, sessionID, rawURL string, waitMs int) (BrowserSnapshot, error) {
+	parsed, err := ValidatePublicURL(rawURL)
+	if err != nil {
+		return BrowserSnapshot{}, err
+	}
+	body := map[string]any{"session_id": sessionID, "url": parsed.String()}
+	if waitMs > 0 {
+		body["wait_ms"] = waitMs
+	}
+	return c.sessionSnapshot(ctx, "/session/navigate", body)
+}
+
+func (c *BrowserClient) Snapshot(ctx context.Context, sessionID string) (BrowserSnapshot, error) {
+	return c.sessionSnapshot(ctx, "/session/snapshot", map[string]any{"session_id": sessionID})
+}
+
+func (c *BrowserClient) Click(ctx context.Context, sessionID, ref string) (BrowserSnapshot, error) {
+	return c.sessionSnapshot(ctx, "/session/click", map[string]any{
+		"session_id": sessionID,
+		"ref":        ref,
+	})
+}
+
+func (c *BrowserClient) Type(ctx context.Context, sessionID, ref, text string, submit bool) (BrowserSnapshot, error) {
+	return c.sessionSnapshot(ctx, "/session/type", map[string]any{
+		"session_id": sessionID,
+		"ref":        ref,
+		"text":       text,
+		"submit":     submit,
+	})
+}
+
+func (c *BrowserClient) sessionSnapshot(ctx context.Context, path string, body map[string]any) (BrowserSnapshot, error) {
+	var out BrowserSnapshot
+	if err := c.postJSON(ctx, path, body, &out); err != nil {
+		return BrowserSnapshot{}, err
+	}
+	if out.Error != "" {
+		return out, fmt.Errorf("%s", out.Error)
+	}
+	return out, nil
+}
+
+func (c *BrowserClient) postJSON(ctx context.Context, path string, body any, out any) error {
+	if c == nil {
+		return fmt.Errorf("browser sidecar not configured")
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 2_000_000))
+	if out != nil {
+		if err := json.Unmarshal(raw, out); err != nil && res.StatusCode >= 200 && res.StatusCode < 300 {
+			return fmt.Errorf("invalid browser response")
+		}
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &errBody)
+		msg := strings.TrimSpace(errBody.Error)
+		if msg == "" {
+			msg = fmt.Sprintf("browser returned status %d", res.StatusCode)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+func FormatBrowserSnapshot(snap BrowserSnapshot) string {
+	title := strings.TrimSpace(snap.Title)
+	if title == "" {
+		title = snap.URL
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\nURL: %s\n", title, snap.URL)
+	if len(snap.Elements) > 0 {
+		b.WriteString("\nInteractive elements (use ref with browser_click / browser_type):\n")
+		for _, el := range snap.Elements {
+			label := strings.TrimSpace(el.Name)
+			if label == "" {
+				label = el.Tag
+			}
+			fmt.Fprintf(&b, "- %s <%s", el.Ref, el.Tag)
+			if el.Type != "" {
+				fmt.Fprintf(&b, " type=%s", el.Type)
+			}
+			b.WriteString("> ")
+			b.WriteString(label)
+			b.WriteByte('\n')
+		}
+	}
+	text := strings.TrimSpace(snap.Text)
+	if text != "" {
+		b.WriteString("\n")
+		b.WriteString(text)
+	}
+	return b.String()
+}

@@ -72,12 +72,14 @@ func (b Budgets) withDefaults() Budgets {
 
 // Harness is the Hermes-shaped agent loop.
 type Harness struct {
-	Store    RunStore
-	LLM      Completer
-	Registry *Registry
-	WorkerID string
-	Budgets  Budgets
-	System   string // optional override system prompt prefix
+	Store     RunStore
+	LLM       Completer
+	Registry  *Registry
+	WorkerID  string
+	Budgets   Budgets
+	System    string // optional override system prompt prefix
+	Approvals ApprovalRecorder
+	Browser   SessionCloser
 }
 
 // Run executes (or resumes) one agent_run until terminal, waiting_for_user, or cancel.
@@ -107,6 +109,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 	deadline := time.Now().Add(budgets.WallClock)
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer h.closeBrowserIfTerminal(context.Background(), run)
 
 	run, err := h.Store.Heartbeat(runCtx, run.UserID, run.ID, workerID, budgets.Lease)
 	if err != nil {
@@ -284,6 +287,16 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				if allowMulti, ok := argsMap["allow_multiple"].(bool); ok && allowMulti {
 					payload["allow_multiple"] = true
 				}
+				if details, ok := argsMap["details"]; ok && details != nil {
+					payload["details"] = details
+				}
+				if name == "request_approval" && h.Approvals != nil {
+					if id, err := h.Approvals.RecordRequest(runCtx, run.UserID, run.ID, payload); err != nil {
+						logApprovalLedger(err, run.ID)
+					} else if id != "" {
+						payload["action_run_id"] = id
+					}
+				}
 				seq++
 				if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepApprovalRequest, payload); err != nil {
 					return err
@@ -457,6 +470,21 @@ func (h *Harness) fail(ctx context.Context, run storage.AgentRun, seq int, errTe
 	return err
 }
 
+func (h *Harness) closeBrowserIfTerminal(ctx context.Context, run storage.AgentRun) {
+	if h == nil || h.Browser == nil || strings.TrimSpace(run.ID) == "" {
+		return
+	}
+	fresh := run
+	if h.Store != nil {
+		if got, err := h.Store.Get(ctx, run.UserID, run.ID); err == nil {
+			fresh = got
+		}
+	}
+	if storage.IsTerminalAgentStatus(fresh.Status) {
+		_ = h.Browser.CloseSession(ctx, run.ID)
+	}
+}
+
 func defaultSystemPrompt() string {
 	return strings.TrimSpace(`You are Donna's cloud agent harness — a long-running personal assistant worker.
 You run on Donna's servers while the user's phone may be locked.
@@ -464,9 +492,10 @@ You run on Donna's servers while the user's phone may be locked.
 Rules:
 - Pursue the user's goal thoroughly using tools. Do not ask them to keep the app open.
 - Prefer memory_search / search_notes before external fetch when the answer may be personal.
-- Use fetch_url for static HTML/docs. Use browse_page (real browser + JavaScript) when fetch_url is empty/incomplete or the site is a JS app. Prefer fetch_url first when unsure.
+- Use fetch_url for static HTML/docs. Use browse_page for a one-shot extract of a JS page. For forms or multi-step sites, use browser_navigate then browser_snapshot then browser_click / browser_type on the same session. Never type card numbers, CVV, or passwords. Never click Pay / Place order / Submit payment — call request_approval first.
 - Use fetch_image when you have a direct public image URL (jpeg/png/gif/webp) and should show it. After it succeeds, include the returned markdown image ![description](url) on its own line in the user-visible summary. Never invent image URLs. You cannot generate images.
 - Keep a short todo plan via the todo tool for multi-step goals.
+- Use delegate_task for parallel research workstreams. Children cannot delegate or book. Prefer wait=true.
 - Skills listed in the system prompt may help: call load_skill(name) to get a skill's full instructions and follow them when they apply. User-selected skills are already included in full — follow them.
 - When you need more information from the user, call ask_user with a clear question and stop. Never ask a clarifying question as your final plain-text reply — they can only answer through the Reply UI after ask_user.
 - Whenever the answer is one of a few discrete choices (airports, dates, yes/no, airlines, seat prefs, which note/photo), include an options array with short labels. Set allow_multiple true only when they may pick more than one. Prefer taps over typing.

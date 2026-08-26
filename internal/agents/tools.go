@@ -11,11 +11,14 @@ import (
 )
 
 // DefaultToolsets builds the agent tool registry.
-// When browserURL is set (donna-browser sidecar), browse_page is registered.
+// When browserURL is set (donna-browser sidecar), browse_page plus interactive
+// session tools (navigate/snapshot/click/type) are registered. Chat stays on
+// one-shot browse_page only.
 // When prov is non-nil (skills enabled), skills tools are registered.
 // When employees is non-nil, report_progress / complete_goal are registered.
 // Optional Phase3Tools registers write_memory_fact / propose_calendar_event;
 // search_flights always registers (unconfigured partner is an honest stub).
+// Call DelegateTaskTool after constructing the Spawner and Register it.
 func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, prov SkillProvider, employees EmployeeProgressWriter, phase3 ...Phase3Tools) *Registry {
 	reg := NewRegistry()
 	reg.Register(todoTool())
@@ -31,6 +34,9 @@ func DefaultToolsets(mem MemorySearcher, notes NoteSearcher, browserURL string, 
 	reg.Register(fetchImageTool())
 	if client := tools.NewBrowserClient(browserURL); client != nil {
 		reg.Register(browsePageTool(client))
+		for _, t := range interactiveBrowserTools(client) {
+			reg.Register(t)
+		}
 	}
 	reg.Register(sessionSearchTool())
 	if prov != nil {

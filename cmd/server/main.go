@@ -203,6 +203,7 @@ func main() {
 		WorkerID: "donna-server",
 	}
 	agentSpawner := &agents.Spawner{Store: agentsStore, Jobs: jobStore, Mem: memBridge, Skills: agentSkillProv}
+	agentRegistry.Register(agents.DelegateTaskTool(agentSpawner))
 	employeeService := &employees.Service{
 		Store:   employeesStore,
 		Agents:  agentsStore,
@@ -242,15 +243,24 @@ func main() {
 			Handlers: handlers,
 		}
 	}
-	_ = agentSpawner
+
 	convStore.TitleGen = &conversations.LLMTitleGenerator{LLM: llm}
 	ingestpkg.InitExtractors(ingestpkg.Services{STT: stt, LLM: llm})
 	ingestpkg.SetBrowserBaseURL(cfg.BrowserURL)
 
 	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}, Reminders: reminderService}
-	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false}
+	actionExecutor.ResumeAgent = func(ctx context.Context, userID, runID, note string) error {
+		_, err := agents.ResumeAfterApproval(ctx, agentsStore, jobStore, userID, runID, note)
+		return err
+	}
+	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false, Agents: agentSpawner}
 	intentExtractor := &intents.Extractor{Store: actionsStore, LLM: llm, Matcher: actionMatcher}
 	intentQueue := intents.NewQueue(intentExtractor)
+	agentHarness.Approvals = &agents.ActionApprovalLedger{Store: actionsStore}
+	if browser := tools.NewBrowserClient(cfg.BrowserURL); browser != nil {
+		agentHarness.Browser = browser
+	}
+	scheduleService.Intents = actionsStore
 
 	noteSync := &notes.Sync{
 		Store:   notesStore,
@@ -442,7 +452,7 @@ func main() {
 	}
 
 	if cfg.CloudAgentsEnabled {
-		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase}
+		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase, Actions: actionsStore}
 		agents.RegisterRoutes(r, authMiddleware, agentsHandler)
 		log.Print("cloud agents: /agent-runs enabled", map[string]any{"tools": agentRegistry.Len()})
 

@@ -75,7 +75,7 @@ func TestNoCreateNoteBuiltin(t *testing.T) {
 }
 
 func TestBuiltinFromConfigAllowsIntegrationBuiltins(t *testing.T) {
-	for _, name := range []string{"create_calendar_event", "send_email", "draft_message"} {
+	for _, name := range []string{"create_calendar_event", "send_email", "draft_message", "agent_approval"} {
 		got, err := BuiltinFromConfig([]byte(`{"builtin":"` + name + `"}`))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -86,5 +86,19 @@ func TestBuiltinFromConfigAllowsIntegrationBuiltins(t *testing.T) {
 	}
 	if _, err := BuiltinFromConfig([]byte(`{"builtin":"create_note"}`)); err == nil {
 		t.Fatal("create_note must remain rejected")
+	}
+}
+
+func TestBuiltinAgentApprovalIsNoOp(t *testing.T) {
+	r := &BuiltinRunner{}
+	out, err := r.Run(context.Background(), BuiltinAgentApproval, map[string]any{
+		"kind":    "book_flight",
+		"summary": "SFO $499",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output["charged"] != false || out.Output["approved"] != true {
+		t.Fatalf("approval must not charge: %#v", out.Output)
 	}
 }

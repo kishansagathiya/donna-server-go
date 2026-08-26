@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ type Handler struct {
 	Spawner    *Spawner
 	Jobs       *storage.BackgroundJobs
 	WebAppBase string
+	Actions    *storage.ActionsStore
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +212,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": "redirect_failed", "message": err.Error()})
 		return
 	}
+	h.settleApprovalLedger(r.Context(), userID, runID, msg)
 	// Resume paused/finished runs so the reply is consumed by the harness.
 	switch run.Status {
 	case storage.AgentStatusWaitingForUser, storage.AgentStatusSucceeded, storage.AgentStatusFailed, storage.AgentStatusQueued:
@@ -220,6 +223,24 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *Handler) settleApprovalLedger(ctx context.Context, userID, runID, msg string) {
+	if h == nil || h.Actions == nil || !h.Actions.Enabled {
+		return
+	}
+	_ = h.Actions.SettleProposedForAgentRun(ctx, userID, runID, RedirectLedgerStatus(msg))
+}
+
+func RedirectLedgerStatus(msg string) string {
+	s := strings.TrimSpace(strings.ToLower(msg))
+	s = strings.TrimRight(s, ".!")
+	switch s {
+	case "approved", "approve", "yes":
+		return "succeeded"
+	default:
+		return "cancelled"
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

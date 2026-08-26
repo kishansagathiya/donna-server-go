@@ -103,9 +103,9 @@ type RunContext struct {
 }
 
 type TodoItem struct {
-	ID       string `json:"id"`
-	Content  string `json:"content"`
-	Status   string `json:"status"` // pending | in_progress | done
+	ID      string `json:"id"`
+	Content string `json:"content"`
+	Status  string `json:"status"` // pending | in_progress | done
 }
 
 func ParseArgs[T any](argsJSON string) (T, error) {

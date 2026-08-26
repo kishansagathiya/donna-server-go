@@ -26,6 +26,8 @@ type Executor struct {
 	Builtin      *BuiltinRunner
 	Integrations IntegrationEffects
 	Reminders    ReminderEffects
+	// ResumeAgent requeues a waiting cloud agent after ledger confirm/deny.
+	ResumeAgent func(ctx context.Context, userID, runID, note string) error
 }
 
 func (e *Executor) ConfirmAndExecute(ctx context.Context, userID, runID string) (storage.ActionRun, error) {
@@ -80,9 +82,14 @@ func (e *Executor) Cancel(ctx context.Context, userID, runID string) (storage.Ac
 	if run.Status != "proposed" && run.Status != "confirmed" {
 		return storage.ActionRun{}, fmt.Errorf("run_not_cancellable")
 	}
-	return e.Store.UpdateActionRun(ctx, userID, runID, map[string]any{
+	updated, err := e.Store.UpdateActionRun(ctx, userID, runID, map[string]any{
 		"status": "cancelled",
 	})
+	if err != nil {
+		return storage.ActionRun{}, err
+	}
+	e.resumeLinkedAgent(ctx, userID, updated, "Denied.")
+	return updated, nil
 }
 
 func (e *Executor) execute(ctx context.Context, userID string, run storage.ActionRun) (storage.ActionRun, error) {
@@ -177,7 +184,32 @@ func (e *Executor) execute(ctx context.Context, userID string, run storage.Actio
 	if run.IntentID != nil && *run.IntentID != "" {
 		_ = e.Store.MarkIntentActed(ctx, userID, *run.IntentID)
 	}
+	e.resumeLinkedAgent(ctx, userID, succeeded, "Approved.")
 	return succeeded, nil
+}
+
+func (e *Executor) resumeLinkedAgent(ctx context.Context, userID string, run storage.ActionRun, note string) {
+	if e == nil || e.ResumeAgent == nil {
+		return
+	}
+	if !shouldResumeAgent(run) {
+		return
+	}
+	_ = e.ResumeAgent(ctx, userID, strings.TrimSpace(*run.AgentRunID), note)
+}
+
+func shouldResumeAgent(run storage.ActionRun) bool {
+	if run.AgentRunID == nil || strings.TrimSpace(*run.AgentRunID) == "" {
+		return false
+	}
+	return strings.TrimSpace(ptrString(run.ApprovalKind)) != ""
+}
+
+func ptrString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func (e *Executor) runIntegration(ctx context.Context, userID string, name BuiltinName, input map[string]any) (map[string]any, error) {
