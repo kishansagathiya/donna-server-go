@@ -60,7 +60,7 @@ func (e *Extractor) ExtractFromSource(ctx context.Context, in SourceInput) error
 
 	for _, item := range extracted {
 		kind := normalizeKind(item.Kind)
-		if kind == "" || kind == "create_note" {
+		if kind == "" || kind == "create_note" || kind == "agent_result" {
 			continue
 		}
 		summary := strings.TrimSpace(item.Summary)

@@ -12,20 +12,20 @@ import (
 
 // kindToActionSlug maps extracted intent kinds to system action slugs.
 var kindToActionSlug = map[string]string{
-	"remind":         "propose_reminder",
-	"reminder":       "propose_reminder",
-	"propose_reminder": "propose_reminder",
-	"follow_up":      "draft_message",
-	"followup":       "draft_message",
-	"draft_message":  "draft_message",
-	"message":        "draft_message",
-	"email":          "send_email",
-	"send_email":     "send_email",
-	"schedule":       "create_calendar_event",
-	"calendar":       "create_calendar_event",
+	"remind":                "propose_reminder",
+	"reminder":              "propose_reminder",
+	"propose_reminder":      "propose_reminder",
+	"follow_up":             "draft_message",
+	"followup":              "draft_message",
+	"draft_message":         "draft_message",
+	"message":               "draft_message",
+	"email":                 "send_email",
+	"send_email":            "send_email",
+	"schedule":              "create_calendar_event",
+	"calendar":              "create_calendar_event",
 	"create_calendar_event": "create_calendar_event",
-	"open_url":       "open_url",
-	"url":            "open_url",
+	"open_url":              "open_url",
+	"url":                   "open_url",
 }
 
 type Matcher struct {
@@ -34,6 +34,21 @@ type Matcher struct {
 	Preferences *storage.Preferences
 	// AutoInternal, when true, auto-confirms and executes risk=internal builtins.
 	AutoInternal bool
+	Agents       IntentAgentSpawner
+}
+
+// IntentAgentSpawner starts a cloud agent from an extracted intent.
+type IntentAgentSpawner interface {
+	SpawnFromIntent(ctx context.Context, userID string, intent storage.Intent) error
+}
+
+func ShouldSpawnCloudAgent(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "find_media", "research", "research_and_act", "book_travel":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Matcher) MatchIntent(ctx context.Context, userID string, intent storage.Intent) error {
@@ -43,11 +58,29 @@ func (m *Matcher) MatchIntent(ctx context.Context, userID string, intent storage
 	if intent.Status != "open" {
 		return nil
 	}
+	kind := strings.ToLower(strings.TrimSpace(intent.Kind))
+	if kind == "agent_result" {
+		return nil
+	}
 	if _, err := m.Store.FindActiveRunForIntent(ctx, userID, intent.ID); err == nil {
 		return nil
 	}
 
-	slug := kindToActionSlug[strings.ToLower(strings.TrimSpace(intent.Kind))]
+	if ShouldSpawnCloudAgent(kind) {
+		if m.Agents == nil {
+			log.Print("agent spawn skipped: no spawner", map[string]any{
+				"kind":     intent.Kind,
+				"intentId": log.ShortID(intent.ID),
+			})
+			return nil
+		}
+		if err := m.Agents.SpawnFromIntent(ctx, userID, intent); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	slug := kindToActionSlug[kind]
 	if slug == "" {
 		log.Print("no action match for intent kind", map[string]any{
 			"kind":     intent.Kind,

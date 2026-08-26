@@ -109,6 +109,22 @@ func (s *scriptedLLM) CompleteOnceWithOptions(ctx context.Context, messages []pr
 	return m, nil
 }
 
+type fakeApprovalLedger struct {
+	calls    int
+	lastKind string
+}
+
+func (f *fakeApprovalLedger) RecordRequest(ctx context.Context, userID, agentRunID string, payload map[string]any) (string, error) {
+	f.calls++
+	f.lastKind = trimAny(payload["kind"])
+	if args, ok := payload["args"].(map[string]any); ok {
+		if k := trimAny(args["kind"]); k != "" {
+			f.lastKind = k
+		}
+	}
+	return "ar-test", nil
+}
+
 type memRunStore struct {
 	mu    sync.Mutex
 	runs  map[string]*storage.AgentRun
@@ -261,14 +277,14 @@ func (m *memRunStore) WaitForUser(ctx context.Context, userID, runID string, app
 
 func TestHarnessFinalAnswer(t *testing.T) {
 	run := storage.AgentRun{
-		ID:            "run-1",
-		UserID:        "user-1",
-		Goal:          "Find Lisbon photo",
-		Status:        storage.AgentStatusQueued,
-		Plan:          json.RawMessage(`[]`),
+		ID:             "run-1",
+		UserID:         "user-1",
+		Goal:           "Find Lisbon photo",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
 		MemorySnapshot: json.RawMessage(`{}`),
-		MaxSteps:      5,
-		ToolAllowlist: []string{"orchestration"},
+		MaxSteps:       5,
+		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
 	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
@@ -450,6 +466,7 @@ func TestHarnessRequestApprovalPauses(t *testing.T) {
 		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
+	ledger := &fakeApprovalLedger{}
 	args, _ := json.Marshal(map[string]any{"kind": "book_flight", "summary": "SFO $499"})
 	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
 		{
@@ -465,11 +482,12 @@ func TestHarnessRequestApprovalPauses(t *testing.T) {
 	reg.Register(todoTool())
 	reg.Register(requestApprovalTool())
 	h := &Harness{
-		Store:    store,
-		LLM:      llm,
-		Registry: reg,
-		WorkerID: "test",
-		Budgets:  Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+		Store:     store,
+		LLM:       llm,
+		Registry:  reg,
+		WorkerID:  "test",
+		Budgets:   Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+		Approvals: ledger,
 	}
 	if err := h.Run(context.Background(), run); err != nil {
 		t.Fatal(err)
@@ -478,18 +496,21 @@ func TestHarnessRequestApprovalPauses(t *testing.T) {
 	if got.Status != storage.AgentStatusWaitingForUser {
 		t.Fatalf("status=%s", got.Status)
 	}
+	if ledger.calls != 1 || ledger.lastKind != "book_flight" {
+		t.Fatalf("ledger calls=%d kind=%s", ledger.calls, ledger.lastKind)
+	}
 }
 
 func TestHarnessCancelMidRun(t *testing.T) {
 	run := storage.AgentRun{
-		ID:            "run-3",
-		UserID:        "user-1",
-		Goal:          "Long task",
-		Status:        storage.AgentStatusQueued,
-		Plan:          json.RawMessage(`[]`),
+		ID:             "run-3",
+		UserID:         "user-1",
+		Goal:           "Long task",
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
 		MemorySnapshot: json.RawMessage(`{}`),
-		MaxSteps:      10,
-		ToolAllowlist: []string{"orchestration"},
+		MaxSteps:       10,
+		ToolAllowlist:  []string{"orchestration"},
 	}
 	store := newMemRunStore(run)
 	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{

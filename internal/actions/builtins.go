@@ -18,6 +18,7 @@ const (
 	BuiltinOpenURL             BuiltinName = "open_url"
 	BuiltinCreateCalendarEvent BuiltinName = "create_calendar_event"
 	BuiltinSendEmail           BuiltinName = "send_email"
+	BuiltinAgentApproval       BuiltinName = "agent_approval"
 )
 
 type BuiltinResult struct {
@@ -38,6 +39,8 @@ func (r *BuiltinRunner) Run(ctx context.Context, name BuiltinName, input map[str
 	case BuiltinCreateCalendarEvent, BuiltinSendEmail:
 		// Side-effecting integrations are handled by Executor.Integrations.
 		return BuiltinResult{}, fmt.Errorf("integration_builtin:%s", name)
+	case BuiltinAgentApproval:
+		return r.agentApproval(input)
 	default:
 		return BuiltinResult{}, fmt.Errorf("unknown_builtin:%s", name)
 	}
@@ -54,13 +57,13 @@ func (r *BuiltinRunner) draftMessage(input map[string]any) (BuiltinResult, error
 		return BuiltinResult{}, fmt.Errorf("body_required")
 	}
 	return BuiltinResult{Output: map[string]any{
-		"type":      "draft_message",
-		"recipient": stringSlot(input, "recipient"),
-		"subject":   stringSlot(input, "subject"),
-		"channel":   defaultString(stringSlot(input, "channel"), "message"),
-		"body":      body,
+		"type":       "draft_message",
+		"recipient":  stringSlot(input, "recipient"),
+		"subject":    stringSlot(input, "subject"),
+		"channel":    defaultString(stringSlot(input, "channel"), "message"),
+		"body":       body,
 		"drafted_at": time.Now().UTC().Format(time.RFC3339),
-		"sent":      false,
+		"sent":       false,
 	}}, nil
 }
 
@@ -70,12 +73,12 @@ func (r *BuiltinRunner) proposeReminder(input map[string]any) (BuiltinResult, er
 		return BuiltinResult{}, fmt.Errorf("title_required")
 	}
 	return BuiltinResult{Output: map[string]any{
-		"type":       "propose_reminder",
-		"title":      title,
-		"when":       stringSlot(input, "when"),
-		"notes":      stringSlot(input, "notes"),
+		"type":        "propose_reminder",
+		"title":       title,
+		"when":        stringSlot(input, "when"),
+		"notes":       stringSlot(input, "notes"),
 		"proposed_at": time.Now().UTC().Format(time.RFC3339),
-		"scheduled":  false,
+		"scheduled":   false,
 	}}, nil
 }
 
@@ -92,11 +95,22 @@ func (r *BuiltinRunner) openURL(input map[string]any) (BuiltinResult, error) {
 		return BuiltinResult{}, fmt.Errorf("unsupported_url_scheme")
 	}
 	return BuiltinResult{Output: map[string]any{
-		"type":      "open_url",
-		"url":       parsed.String(),
-		"label":     defaultString(stringSlot(input, "label"), parsed.Host),
-		"opened":    false,
-		"ready_at":  time.Now().UTC().Format(time.RFC3339),
+		"type":     "open_url",
+		"url":      parsed.String(),
+		"label":    defaultString(stringSlot(input, "label"), parsed.Host),
+		"opened":   false,
+		"ready_at": time.Now().UTC().Format(time.RFC3339),
+	}}, nil
+}
+
+func (r *BuiltinRunner) agentApproval(input map[string]any) (BuiltinResult, error) {
+	return BuiltinResult{Output: map[string]any{
+		"type":        "agent_approval",
+		"kind":        stringSlot(input, "kind"),
+		"summary":     stringSlot(input, "summary"),
+		"approved":    true,
+		"charged":     false,
+		"approved_at": time.Now().UTC().Format(time.RFC3339),
 	}}, nil
 }
 
@@ -113,7 +127,7 @@ func BuiltinFromConfig(config json.RawMessage) (BuiltinName, error) {
 	name := BuiltinName(strings.TrimSpace(cfg.Builtin))
 	switch name {
 	case BuiltinDraftMessage, BuiltinProposeReminder, BuiltinOpenURL,
-		BuiltinCreateCalendarEvent, BuiltinSendEmail:
+		BuiltinCreateCalendarEvent, BuiltinSendEmail, BuiltinAgentApproval:
 		return name, nil
 	default:
 		return "", fmt.Errorf("unknown_builtin:%s", name)

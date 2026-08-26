@@ -59,9 +59,11 @@ type ActionRun struct {
 	CreatedAt   string          `json:"created_at"`
 	UpdatedAt   string          `json:"updated_at"`
 	// Optional joined fields for API responses.
-	ActionSlug *string `json:"action_slug,omitempty"`
-	ActionName *string `json:"action_name,omitempty"`
-	ActionRisk *string `json:"action_risk,omitempty"`
+	ActionSlug   *string `json:"action_slug,omitempty"`
+	ActionName   *string `json:"action_name,omitempty"`
+	ActionRisk   *string `json:"action_risk,omitempty"`
+	AgentRunID   *string `json:"agent_run_id,omitempty"`
+	ApprovalKind *string `json:"approval_kind,omitempty"`
 }
 
 type NewIntentInput struct {
@@ -75,10 +77,12 @@ type NewIntentInput struct {
 }
 
 type NewActionRunInput struct {
-	IntentID *string
-	ActionID string
-	Status   string
-	Input    json.RawMessage
+	IntentID     *string
+	ActionID     string
+	Status       string
+	Input        json.RawMessage
+	AgentRunID   *string
+	ApprovalKind string
 }
 
 // ActionsStore persists intents, actions, and action runs.
@@ -101,12 +105,12 @@ func (a *ActionsStore) selectIntentInboxColumns() string {
 }
 
 func (a *ActionsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,action_id,status,input,output,error,confirmed_at,started_at,finished_at,created_at,updated_at"
+	return "id,user_id,intent_id,action_id,status,input,output,error,confirmed_at,started_at,finished_at,created_at,updated_at,agent_run_id,approval_kind"
 }
 
 // Inbox run projection skips input/output jsonb blobs.
 func (a *ActionsStore) selectRunInboxColumns() string {
-	return "id,user_id,intent_id,action_id,status,error,confirmed_at,started_at,finished_at,created_at,updated_at"
+	return "id,user_id,intent_id,action_id,status,error,confirmed_at,started_at,finished_at,created_at,updated_at,agent_run_id,approval_kind"
 }
 
 func (a *ActionsStore) selectActionInboxColumns() string {
@@ -460,6 +464,12 @@ func (a *ActionsStore) CreateActionRun(ctx context.Context, userID string, in Ne
 	if in.IntentID != nil {
 		body["intent_id"] = *in.IntentID
 	}
+	if in.AgentRunID != nil && *in.AgentRunID != "" {
+		body["agent_run_id"] = *in.AgentRunID
+	}
+	if kind := strings.TrimSpace(in.ApprovalKind); kind != "" {
+		body["approval_kind"] = kind
+	}
 
 	var rows []ActionRun
 	if err := a.DB.Insert(ctx, "action_runs", body, &rows); err != nil {
@@ -572,4 +582,34 @@ func (a *ActionsStore) cancelProposedRunsForIntent(ctx context.Context, userID, 
 		"status":     "cancelled",
 		"updated_at": now,
 	})
+}
+
+// SettleProposedForAgentRun marks proposed ledger rows for an agent run
+// succeeded (Approved) or cancelled (Denied / steered away).
+func (a *ActionsStore) SettleProposedForAgentRun(ctx context.Context, userID, agentRunID, status string) error {
+	if a == nil || !a.Enabled || a.DB == nil {
+		return fmt.Errorf("actions_disabled")
+	}
+	agentRunID = strings.TrimSpace(agentRunID)
+	if agentRunID == "" {
+		return nil
+	}
+	status = strings.TrimSpace(status)
+	if status != "succeeded" && status != "cancelled" {
+		return fmt.Errorf("invalid_settle_status")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	q := url.Values{}
+	q.Set("user_id", "eq."+userID)
+	q.Set("agent_run_id", "eq."+agentRunID)
+	q.Set("status", "eq.proposed")
+	patch := map[string]any{
+		"status":     status,
+		"updated_at": now,
+	}
+	if status == "succeeded" {
+		patch["confirmed_at"] = now
+		patch["finished_at"] = now
+	}
+	return a.DB.Patch(ctx, "action_runs", q, patch)
 }

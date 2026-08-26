@@ -47,6 +47,7 @@ type AgentRun struct {
 	IntentID        *string         `json:"intent_id,omitempty"`
 	EmployeeID      *string         `json:"employee_id,omitempty"`
 	ScheduleID      *string         `json:"schedule_id,omitempty"`
+	ParentRunID     *string         `json:"parent_run_id,omitempty"`
 	Goal            string          `json:"goal"`
 	Status          string          `json:"status"`
 	Plan            json.RawMessage `json:"plan"`
@@ -80,6 +81,7 @@ type NewAgentRunInput struct {
 	IntentID       *string
 	EmployeeID     *string
 	ScheduleID     *string
+	ParentRunID    *string
 	Goal           string
 	ToolAllowlist  []string
 	SelectedSkills []string
@@ -93,7 +95,7 @@ type AgentsStore struct {
 }
 
 func (s *AgentsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,employee_id,schedule_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
+	return "id,user_id,intent_id,employee_id,schedule_id,parent_run_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
 }
 
 func (s *AgentsStore) selectStepColumns() string {
@@ -143,6 +145,9 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	}
 	if in.ScheduleID != nil && *in.ScheduleID != "" {
 		body["schedule_id"] = *in.ScheduleID
+	}
+	if in.ParentRunID != nil && *in.ParentRunID != "" {
+		body["parent_run_id"] = *in.ParentRunID
 	}
 
 	var rows []AgentRun
