@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -48,6 +49,9 @@ type Note struct {
 	// URL); it is never persisted and is empty on inserts/updates. Omitted from
 	// JSON when empty so the field disappears for notes without audio.
 	AudioURL string `json:"audio_url,omitempty"`
+	// Attachments is the client-facing signed list. Never includes storage_path.
+	Attachments []NoteAttachment `json:"attachments,omitempty"`
+	HasImage    bool             `json:"has_image,omitempty"`
 	// Tags is populated on read (GetNoteByID); never persisted on the notes row.
 	Tags []string `json:"tags,omitempty"`
 }
@@ -70,6 +74,8 @@ type NoteSummary struct {
 	Keywords          []string `json:"keywords"`
 	Category          *string  `json:"category"`
 	HasAudio          bool     `json:"has_audio"`
+	HasImage          bool     `json:"has_image"`
+	ImageURL          string   `json:"image_url,omitempty"`
 	ContentVersion    int64    `json:"content_version"`
 	EnrichmentStatus  string   `json:"enrichment_status"`
 	EnrichmentVersion int64    `json:"enrichment_version"`
@@ -97,7 +103,13 @@ type NoteAudioInput struct {
 // (it'd leak the storage path to clients), so we decode into this wrapper.
 type noteSummaryRow struct {
 	NoteSummary
-	AudioPath *string `json:"audio_path"`
+	AudioPath        *string         `json:"audio_path"`
+	AttachmentsRaw   json.RawMessage `json:"attachments"`
+}
+
+type noteRow struct {
+	Note
+	AttachmentsRaw json.RawMessage `json:"attachments"`
 }
 
 func (r noteSummaryRow) toSummary() NoteSummary {
@@ -112,6 +124,8 @@ type NoteUpdate struct {
 	IsImportant      *bool
 	IsUrgent         *bool
 	ExpectedVersion  *int64 // when set, update fails with ErrVersionConflict on mismatch
+	AddImages        []SaveNoteAttachment
+	RemoveImageIDs   []string
 }
 
 type Notes struct {
@@ -121,11 +135,11 @@ type Notes struct {
 }
 
 func (n *Notes) selectColumns() string {
-	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at,content_version,enrichment_status,enrichment_version,audio_path,audio_mime"
+	return "id,user_id,source_id,source_type,note_date,title,content,preview,is_important,is_urgent,keywords,category,user_last_modified,created_at,updated_at,content_version,enrichment_status,enrichment_version,audio_path,audio_mime,attachments"
 }
 
 func (n *Notes) summaryColumns() string {
-	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category,content_version,enrichment_status,enrichment_version,audio_path"
+	return "id,title,preview,note_date,is_important,is_urgent,source_type,keywords,category,content_version,enrichment_status,enrichment_version,audio_path,attachments"
 }
 
 // CreateNoteOptions configures a freshly-created note. Audio, when non-nil,
@@ -137,6 +151,7 @@ type CreateNoteOptions struct {
 	SourceID *string
 	NoteDate *time.Time
 	Audio    *NoteAudioInput
+	Images   []SaveNoteAttachment
 }
 
 func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content string, opts CreateNoteOptions) (Note, error) {
@@ -156,6 +171,8 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 			}
 			return Note{}, ErrIdempotencyConflict
 		}
+	} else if len(opts.Images) > 0 {
+		clientID = uuid.NewString()
 	}
 
 	body := map[string]any{
@@ -169,6 +186,7 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 		"content_version":    1,
 		"enrichment_status":  "idle",
 		"enrichment_version": 0,
+		"attachments":        []noteAttachmentRow{},
 	}
 	if clientID != "" {
 		body["id"] = clientID
@@ -203,7 +221,15 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 
 	// Embeddings run via background jobs after the row is durable — never on the write path.
 
-	var rows []Note
+	if len(opts.Images) > 0 {
+		rows, err := n.uploadNoteAttachments(ctx, userID, clientID, nil, opts.Images)
+		if err != nil {
+			return Note{}, err
+		}
+		body["attachments"] = rows
+	}
+
+	var rows []noteRow
 	if err := n.DB.Insert(ctx, "notes", body, &rows); err != nil {
 		if clientID != "" && isUniqueViolation(err) {
 			existing, getErr := n.GetNoteByID(ctx, userID, clientID)
@@ -219,7 +245,9 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 	if len(rows) == 0 {
 		return Note{}, fmt.Errorf("failed to create note")
 	}
-	return rows[0], nil
+	note := rows[0].Note
+	n.applyNoteAttachments(ctx, &note, rows[0].AttachmentsRaw)
+	return note, nil
 }
 
 func (n *Notes) UpsertNoteFromSource(ctx context.Context, userID, sourceID, sourceType, content string, noteDate time.Time) (string, error) {
@@ -279,14 +307,15 @@ func (n *Notes) GetNoteByID(ctx context.Context, userID, noteID string) (Note, e
 	q.Set("id", "eq."+noteID)
 	q.Set("user_id", "eq."+userID)
 
-	var rows []Note
+	var rows []noteRow
 	if err := n.DB.Get(ctx, "notes", q, &rows); err != nil {
 		return Note{}, err
 	}
 	if len(rows) == 0 {
 		return Note{}, fmt.Errorf("note not found")
 	}
-	note := rows[0]
+	note := rows[0].Note
+	n.applyNoteAttachments(ctx, &note, rows[0].AttachmentsRaw)
 	if tags, err := n.GetTagsForNote(ctx, userID, noteID); err == nil {
 		note.Tags = tags
 	}
@@ -326,11 +355,7 @@ func (n *Notes) ListForDailyReview(ctx context.Context, userID string, limit int
 	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	out := make([]NoteSummary, 0, len(raw))
-	for _, r := range raw {
-		out = append(out, r.toSummary())
-	}
-	return out, nil
+	return n.summariesFromRaw(ctx, raw), nil
 }
 
 func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int) ([]NoteSummary, error) {
@@ -345,11 +370,7 @@ func (n *Notes) ListRecent(ctx context.Context, userID string, limit, offset int
 	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	out := make([]NoteSummary, 0, len(raw))
-	for _, r := range raw {
-		out = append(out, r.toSummary())
-	}
-	return out, nil
+	return n.summariesFromRaw(ctx, raw), nil
 }
 
 func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []string, limit int) ([]NoteSummary, error) {
@@ -369,11 +390,7 @@ func (n *Notes) GetNotesByIDs(ctx context.Context, userID string, noteIDs []stri
 	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	out := make([]NoteSummary, 0, len(raw))
-	for _, r := range raw {
-		out = append(out, r.toSummary())
-	}
-	return out, nil
+	return n.summariesFromRaw(ctx, raw), nil
 }
 
 func (n *Notes) ListQuadrant(ctx context.Context, userID string, urgent, important bool, limit int) ([]NoteSummary, error) {
@@ -389,11 +406,7 @@ func (n *Notes) ListQuadrant(ctx context.Context, userID string, urgent, importa
 	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	out := make([]NoteSummary, 0, len(raw))
-	for _, r := range raw {
-		out = append(out, r.toSummary())
-	}
-	return out, nil
+	return n.summariesFromRaw(ctx, raw), nil
 }
 
 func (n *Notes) SearchNotes(ctx context.Context, userID, query string, limit int) ([]NoteSummary, error) {
@@ -414,11 +427,7 @@ func (n *Notes) SearchNotes(ctx context.Context, userID, query string, limit int
 	if err := n.DB.Get(ctx, "notes", q, &raw); err != nil {
 		return nil, err
 	}
-	out := make([]NoteSummary, 0, len(raw))
-	for _, r := range raw {
-		out = append(out, r.toSummary())
-	}
-	return out, nil
+	return n.summariesFromRaw(ctx, raw), nil
 }
 
 type noteSearchRow struct {
@@ -501,6 +510,22 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 		body["is_urgent"] = *update.IsUrgent
 	}
 
+	var removedPaths []string
+	if len(update.AddImages) > 0 || len(update.RemoveImageIDs) > 0 {
+		existing, err := n.loadAttachmentRows(ctx, userID, noteID)
+		if err != nil {
+			return Note{}, err
+		}
+		kept, removed := removeNoteAttachmentRows(existing, update.RemoveImageIDs)
+		removedPaths = removed
+		kept, err = n.uploadNoteAttachments(ctx, userID, noteID, kept, update.AddImages)
+		if err != nil {
+			return Note{}, err
+		}
+		body["attachments"] = kept
+		contentChanged = true
+	}
+
 	q := url.Values{}
 	q.Set("id", "eq."+noteID)
 	q.Set("user_id", "eq."+userID)
@@ -512,7 +537,9 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 		if contentChanged {
 			body["enrichment_status"] = "idle"
 		}
-		var rows []Note
+		var rows []struct {
+			ID string `json:"id"`
+		}
 		if err := n.DB.PatchReturning(ctx, "notes", q, body, &rows); err != nil {
 			return Note{}, err
 		}
@@ -522,11 +549,13 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 			}
 			return Note{}, ErrVersionConflict
 		}
-		return rows[0], nil
+		if len(removedPaths) > 0 && n.DB != nil {
+			_ = n.DB.DeleteStorageObjects(ctx, NoteAttachmentsBucket, removedPaths)
+		}
+		return n.GetNoteByID(ctx, userID, noteID)
 	}
 
 	if contentChanged {
-		// Bump version whenever content changes even without an explicit expected version.
 		existing, err := n.GetNoteByID(ctx, userID, noteID)
 		if err != nil {
 			return Note{}, err
@@ -537,6 +566,9 @@ func (n *Notes) UpdateNote(ctx context.Context, userID, noteID string, update No
 
 	if err := n.DB.Patch(ctx, "notes", q, body); err != nil {
 		return Note{}, err
+	}
+	if len(removedPaths) > 0 && n.DB != nil {
+		_ = n.DB.DeleteStorageObjects(ctx, NoteAttachmentsBucket, removedPaths)
 	}
 	return n.GetNoteByID(ctx, userID, noteID)
 }
@@ -578,10 +610,17 @@ func (n *Notes) ApplyIndexerMeta(ctx context.Context, noteID string, urgent, imp
 }
 
 func (n *Notes) DeleteNote(ctx context.Context, userID, noteID string) error {
+	rows, _ := n.loadAttachmentRows(ctx, userID, noteID)
 	q := url.Values{}
 	q.Set("id", "eq."+noteID)
 	q.Set("user_id", "eq."+userID)
-	return n.DB.Delete(ctx, "notes", q)
+	if err := n.DB.Delete(ctx, "notes", q); err != nil {
+		return err
+	}
+	if paths := attachmentStoragePaths(rows); len(paths) > 0 && n.DB != nil {
+		_ = n.DB.DeleteStorageObjects(ctx, NoteAttachmentsBucket, paths)
+	}
+	return nil
 }
 
 func formatNoteSnippet(row noteSearchRow) string {

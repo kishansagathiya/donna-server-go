@@ -134,11 +134,9 @@ func (n *Notes) ListFeed(ctx context.Context, userID string, in NotesFeedQuery) 
 		raw = raw[:limit]
 	}
 
-	items := make([]NoteSummary, 0, len(raw))
-	ids := make([]string, 0, len(raw))
-	for _, r := range raw {
-		s := r.toSummary()
-		items = append(items, s)
+	items := n.summariesFromRaw(ctx, raw)
+	ids := make([]string, 0, len(items))
+	for _, s := range items {
 		ids = append(ids, s.ID)
 	}
 
