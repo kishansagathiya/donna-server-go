@@ -69,7 +69,7 @@ func (s *Sync) CreateManual(ctx context.Context, userID, content string, noteDat
 	return s.CreateManualWithID(ctx, userID, "", content, noteDate, audio)
 }
 
-func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content string, noteDate *time.Time, audio *storage.NoteAudioInput) (storage.Note, error) {
+func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content string, noteDate *time.Time, audio *storage.NoteAudioInput, images ...storage.SaveNoteAttachment) (storage.Note, error) {
 	content = strings.TrimSpace(content)
 	urls := ingest.FindHTTPURLs(content)
 	if len(urls) > 0 && !s.jobsEnabled() {
@@ -79,6 +79,7 @@ func (s *Sync) CreateManualWithID(ctx context.Context, userID, clientID, content
 		ID:       strings.TrimSpace(clientID),
 		NoteDate: noteDate,
 		Audio:    audio,
+		Images:   images,
 	})
 	if err != nil {
 		return storage.Note{}, err

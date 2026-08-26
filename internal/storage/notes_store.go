@@ -227,6 +227,9 @@ func (n *Notes) CreateNote(ctx context.Context, userID, sourceType, content stri
 			return Note{}, err
 		}
 		body["attachments"] = rows
+		if content == "" && len(opts.Images) > 0 {
+			body["title"] = noteTitle(opts.Images[0].Filename)
+		}
 	}
 
 	var rows []noteRow

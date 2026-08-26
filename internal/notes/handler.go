@@ -211,16 +211,33 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxNoteRequestBodyBytes)
 	var body struct {
-		ID       string `json:"id"`
-		Content  string `json:"content"`
-		NoteDate string `json:"note_date"`
+		ID          string                 `json:"id"`
+		Content     string                 `json:"content"`
+		NoteDate    string                 `json:"note_date"`
+		Attachments []noteAttachmentInput  `json:"attachments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if isRequestTooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+				"error":   "payload_too_large",
+				"message": "This note is too large. Try fewer or smaller photos.",
+			})
+			return
+		}
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid_body"})
 		return
 	}
-	if strings.TrimSpace(body.Content) == "" {
+	images, err := parseNoteImageAttachments(body.Attachments)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error":   "invalid_attachments",
+			"message": err.Error(),
+		})
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" && len(images) == 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "content_required"})
 		return
 	}
@@ -235,7 +252,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		noteDate = &parsed
 	}
 
-	note, err := h.Sync.CreateManualWithID(r.Context(), userID, strings.TrimSpace(body.ID), strings.TrimSpace(body.Content), noteDate, nil)
+	note, err := h.Sync.CreateManualWithID(r.Context(), userID, strings.TrimSpace(body.ID), strings.TrimSpace(body.Content), noteDate, nil, images...)
 	if err != nil {
 		if errors.Is(err, storage.ErrIdempotencyConflict) {
 			writeJSON(w, http.StatusConflict, map[string]string{
@@ -275,15 +292,33 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxNoteRequestBodyBytes)
 	var body struct {
-		Content        *string `json:"content"`
-		NoteDate       *string `json:"note_date"`
-		IsImportant    *bool   `json:"is_important"`
-		IsUrgent       *bool   `json:"is_urgent"`
-		ContentVersion *int64  `json:"content_version"`
+		Content             *string                `json:"content"`
+		NoteDate            *string                `json:"note_date"`
+		IsImportant         *bool                  `json:"is_important"`
+		IsUrgent            *bool                  `json:"is_urgent"`
+		ContentVersion      *int64                 `json:"content_version"`
+		AddAttachments      []noteAttachmentInput  `json:"add_attachments"`
+		RemoveAttachmentIDs []string               `json:"remove_attachment_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if isRequestTooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+				"error":   "payload_too_large",
+				"message": "This note is too large. Try fewer or smaller photos.",
+			})
+			return
+		}
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid_body"})
+		return
+	}
+	images, err := parseNoteImageAttachments(body.AddAttachments)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error":   "invalid_attachments",
+			"message": err.Error(),
+		})
 		return
 	}
 
@@ -292,6 +327,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		IsImportant:     body.IsImportant,
 		IsUrgent:        body.IsUrgent,
 		ExpectedVersion: body.ContentVersion,
+		AddImages:       images,
+		RemoveImageIDs:  body.RemoveAttachmentIDs,
 	}
 	pendingLinkExpand := false
 	if body.Content != nil {
@@ -326,7 +363,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "update_failed", "message": err.Error()})
 		return
 	}
-	if update.Content != nil {
+	if update.Content != nil || len(update.AddImages) > 0 {
 		if h.Sync != nil {
 			if pendingLinkExpand {
 				h.Sync.enqueueLinkExpand(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
@@ -334,7 +371,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 				h.Sync.enqueueEnrichment(r.Context(), userID, note.ID, note.Content, note.ContentVersion)
 			}
 		}
-		if h.Intents != nil {
+		if h.Intents != nil && update.Content != nil {
 			h.Intents.EnqueueNote(userID, note.ID, note.Content)
 		}
 	}
