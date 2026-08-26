@@ -15,6 +15,8 @@ func TestHealth(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
 			"service":      "donna-server-go",
+			"version":      "1.0.0",
+			"release":      "Personal Assistant",
 			"authRequired": false,
 		})
 	})
@@ -33,5 +35,8 @@ func TestHealth(t *testing.T) {
 	}
 	if body["ok"] != true || body["service"] != "donna-server-go" {
 		t.Fatalf("unexpected body: %#v", body)
+	}
+	if body["version"] != "1.0.0" || body["release"] != "Personal Assistant" {
+		t.Fatalf("unexpected release: %#v", body)
 	}
 }

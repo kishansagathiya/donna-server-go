@@ -18,6 +18,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/agents"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/apidocs"
 	appauth "github.com/kishansagathiya/donna/donna-server-go/internal/auth"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/buildinfo"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/cafe"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/chat"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/config"
@@ -404,6 +405,8 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
 			"service":      "donna-server-go",
+			"version":      buildinfo.Version,
+			"release":      buildinfo.Name,
 			"authRequired": cfg.RequireAuth,
 		})
 	})
@@ -546,6 +549,7 @@ func main() {
 	server := &http.Server{Addr: addr, Handler: r}
 
 	log.Print(fmt.Sprintf("listening on http://%s", addr), nil)
+	log.Print(fmt.Sprintf("release: %s (%s)", buildinfo.Label, buildinfo.Version), nil)
 	log.Print(fmt.Sprintf("health: http://127.0.0.1:%d/health", cfg.Port), nil)
 	if os.Getenv("PORT") != "" {
 		log.Print(fmt.Sprintf("using PORT=%s for HTTP listener", os.Getenv("PORT")), nil)
