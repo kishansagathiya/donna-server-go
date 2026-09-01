@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/log"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/memory"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/storage"
@@ -64,10 +65,18 @@ func (n *NotesBridge) Search(ctx context.Context, userID, query string, limit in
 
 // Spawner creates agent_runs and enqueues background work.
 type Spawner struct {
-	Store  *storage.AgentsStore
-	Jobs   *storage.BackgroundJobs
-	Mem    MemorySearcher
-	Skills SkillProvider
+	Store   *storage.AgentsStore
+	Jobs    *storage.BackgroundJobs
+	Mem     MemorySearcher
+	Skills  SkillProvider
+	Desktop *storage.DesktopStore
+	Flags   *featureflags.Resolver
+	Events  RunEventPublisher
+}
+
+// RunEventPublisher pushes control-plane events to a connected desktop worker.
+type RunEventPublisher interface {
+	Publish(userID, deviceID, kind string, payload map[string]any)
 }
 
 type SpawnInput struct {
@@ -80,6 +89,7 @@ type SpawnInput struct {
 	ToolAllowlist  []string
 	SelectedSkills []string
 	MaxSteps       int
+	WorkspaceID    *string
 }
 
 func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (storage.AgentRun, error) {
@@ -98,17 +108,28 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	if len(allow) == 0 {
 		allow = DefaultParentToolAllowlist()
 	}
+
+	var parent *storage.AgentRun
 	if in.ParentRunID != nil && strings.TrimSpace(*in.ParentRunID) != "" {
-		parent, err := s.Store.Get(ctx, userID, strings.TrimSpace(*in.ParentRunID))
+		p, err := s.Store.Get(ctx, userID, strings.TrimSpace(*in.ParentRunID))
 		if err != nil {
 			return storage.AgentRun{}, err
 		}
-		if parent.ParentRunID != nil && strings.TrimSpace(*parent.ParentRunID) != "" {
+		if p.ParentRunID != nil && strings.TrimSpace(*p.ParentRunID) != "" {
 			return storage.AgentRun{}, fmt.Errorf("nested_delegate_forbidden")
 		}
 		if in.MaxSteps <= 0 {
 			in.MaxSteps = 40
 		}
+		parent = &p
+	}
+
+	route, err := s.routeExecution(ctx, userID, in, parent)
+	if err != nil {
+		return storage.AgentRun{}, err
+	}
+	if route.Local && len(in.ToolAllowlist) == 0 {
+		allow = DefaultLocalToolAllowlist(route.WorkspaceID != nil)
 	}
 
 	// Validate user-selected skills (names must resolve; user skills shadow
@@ -194,18 +215,32 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 	raw, _ := json.Marshal(snapshot)
 
 	run, err := s.Store.Create(ctx, userID, storage.NewAgentRunInput{
-		IntentID:       in.IntentID,
-		EmployeeID:     in.EmployeeID,
-		ScheduleID:     in.ScheduleID,
-		ParentRunID:    in.ParentRunID,
-		Goal:           goal,
-		ToolAllowlist:  allow,
-		SelectedSkills: selected,
-		MaxSteps:       in.MaxSteps,
-		MemorySnapshot: raw,
+		IntentID:         in.IntentID,
+		EmployeeID:       in.EmployeeID,
+		ScheduleID:       in.ScheduleID,
+		ParentRunID:      in.ParentRunID,
+		Goal:             goal,
+		ToolAllowlist:    allow,
+		SelectedSkills:   selected,
+		MaxSteps:         in.MaxSteps,
+		MemorySnapshot:   raw,
+		ExecutionTarget:  route.Target,
+		AssignedDeviceID: route.DeviceID,
+		WorkspaceID:      route.WorkspaceID,
+		WaitingReason:    route.WaitingReason,
 	})
 	if err != nil {
 		return storage.AgentRun{}, err
+	}
+
+	if route.Local {
+		if s.Events != nil && route.DeviceID != nil {
+			s.Events.Publish(userID, *route.DeviceID, "run.available", map[string]any{
+				"run_id":         run.ID,
+				"waiting_reason": route.WaitingReason,
+			})
+		}
+		return run, nil
 	}
 
 	if s.Jobs != nil && s.Jobs.Enabled {
@@ -222,6 +257,93 @@ func (s *Spawner) Spawn(ctx context.Context, userID string, in SpawnInput) (stor
 		}
 	}
 	return run, nil
+}
+
+type spawnRoute struct {
+	Local         bool
+	Target        string
+	DeviceID      *string
+	WorkspaceID   *string
+	WaitingReason *string
+}
+
+func (s *Spawner) routeExecution(ctx context.Context, userID string, in SpawnInput, parent *storage.AgentRun) (spawnRoute, error) {
+	if parent != nil && parent.ExecutionTarget == storage.ExecutionTargetLocal {
+		route := spawnRoute{
+			Local:       true,
+			Target:      storage.ExecutionTargetLocal,
+			DeviceID:    parent.AssignedDeviceID,
+			WorkspaceID: parent.WorkspaceID,
+		}
+		if in.WorkspaceID != nil && strings.TrimSpace(*in.WorkspaceID) != "" {
+			route.WorkspaceID = in.WorkspaceID
+		}
+		return s.annotateLocalWaiting(ctx, userID, route)
+	}
+
+	local := false
+	if s.Flags != nil {
+		flags, err := s.Flags.NotesMemoryV2ForUser(ctx, userID)
+		if err == nil {
+			local = flags.LocalAgentsV1
+		}
+	}
+	if !local {
+		return spawnRoute{Target: storage.ExecutionTargetCloud}, nil
+	}
+	if s.Desktop == nil || !s.Desktop.Enabled {
+		return spawnRoute{}, fmt.Errorf("desktop_required")
+	}
+	device, err := s.Desktop.DefaultDevice(ctx, userID)
+	if err != nil {
+		return spawnRoute{}, fmt.Errorf("desktop_required")
+	}
+	route := spawnRoute{
+		Local:    true,
+		Target:   storage.ExecutionTargetLocal,
+		DeviceID: &device.ID,
+	}
+	if in.WorkspaceID != nil && strings.TrimSpace(*in.WorkspaceID) != "" {
+		ws, err := s.Desktop.GetWorkspace(ctx, userID, strings.TrimSpace(*in.WorkspaceID))
+		if err != nil || ws.DeviceID != device.ID {
+			reason := storage.WaitingWorkspaceUnavailable
+			route.WaitingReason = &reason
+			return route, nil
+		}
+		id := ws.ID
+		route.WorkspaceID = &id
+	}
+	return s.annotateLocalWaiting(ctx, userID, route)
+}
+
+func (s *Spawner) annotateLocalWaiting(ctx context.Context, userID string, route spawnRoute) (spawnRoute, error) {
+	if route.WaitingReason != nil {
+		return route, nil
+	}
+	if route.DeviceID == nil || s.Desktop == nil {
+		reason := storage.WaitingDesktopRequired
+		route.WaitingReason = &reason
+		return route, nil
+	}
+	device, err := s.Desktop.GetDevice(ctx, userID, *route.DeviceID)
+	if err != nil || device.Revoked() {
+		reason := storage.WaitingDesktopRequired
+		route.WaitingReason = &reason
+		return route, nil
+	}
+	if !device.Online(time.Now()) {
+		reason := storage.WaitingDeviceOffline
+		route.WaitingReason = &reason
+		return route, nil
+	}
+	if s.Store != nil {
+		n, err := s.Store.CountRunningOnDevice(ctx, userID, device.ID)
+		if err == nil && n > 0 {
+			reason := storage.WaitingDeviceBusy
+			route.WaitingReason = &reason
+		}
+	}
+	return route, nil
 }
 
 func (s *Spawner) SpawnFromIntent(ctx context.Context, userID string, intent storage.Intent) error {
@@ -305,6 +427,10 @@ func (w *Worker) HandleJob(ctx context.Context, job storage.BackgroundJob) error
 	if err != nil {
 		return err
 	}
+	if run.ExecutionTarget == storage.ExecutionTargetLocal {
+		log.Print("skipping cloud claim for local agent run", map[string]any{"runId": log.ShortID(run.ID)})
+		return nil
+	}
 	switch run.Status {
 	case storage.AgentStatusSucceeded, storage.AgentStatusFailed, storage.AgentStatusCancelled, storage.AgentStatusExpired, storage.AgentStatusWaitingForUser:
 		if w.AfterRun != nil {
@@ -349,7 +475,7 @@ func ResumeAfterApproval(ctx context.Context, store *storage.AgentsStore, jobs *
 	if err != nil {
 		return storage.AgentRun{}, err
 	}
-	if jobs != nil && jobs.Enabled {
+	if jobs != nil && jobs.Enabled && run.ExecutionTarget != storage.ExecutionTargetLocal {
 		_, _ = jobs.Enqueue(ctx, storage.EnqueueJobInput{
 			UserID:     userID,
 			JobType:    storage.JobTypeAgentRun,

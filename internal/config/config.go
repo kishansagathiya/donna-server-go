@@ -65,6 +65,8 @@ type Config struct {
 	BackgroundJobsEnabled bool
 	// CloudAgentsEnabled enables long-running per-user agent harness + /agent-runs APIs.
 	CloudAgentsEnabled bool
+	// LocalAgentsV1 routes new agent runs to a registered Mac when the per-user flag is on.
+	LocalAgentsV1 bool
 	// AgentSkillsEnabled enables agent skills: /skills CRUD + load_skill/save_skill tools.
 	AgentSkillsEnabled bool
 
@@ -222,6 +224,7 @@ func Load() (*Config, error) {
 	memoryV2Retrieval := parseBoolDefault(os.Getenv("DONNA_MEMORY_V2_RETRIEVAL"), true)
 	backgroundJobsEnabled := parseBoolDefault(os.Getenv("DONNA_BACKGROUND_JOBS"), true)
 	cloudAgentsEnabled := parseBoolDefault(os.Getenv("DONNA_CLOUD_AGENTS"), true)
+	localAgentsV1 := parseBool(os.Getenv("DONNA_LOCAL_AGENTS_V1"))
 	agentSkillsEnabled := parseBoolDefault(os.Getenv("DONNA_AGENT_SKILLS"), true)
 
 	errorReportsEnabled := parseBool(os.Getenv("DONNA_ERROR_REPORTS_ENABLED"))
@@ -301,6 +304,7 @@ func Load() (*Config, error) {
 		MemoryV2Retrieval:              memoryV2Retrieval,
 		BackgroundJobsEnabled:          backgroundJobsEnabled,
 		CloudAgentsEnabled:             cloudAgentsEnabled,
+		LocalAgentsV1:                  localAgentsV1,
 		AgentSkillsEnabled:             agentSkillsEnabled,
 		ErrorReportsEnabled:            errorReportsEnabled,
 		GitHubToken:                    strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),

@@ -23,6 +23,14 @@ func DefaultParentToolAllowlist() []string {
 	return []string{"orchestration", "memory", "web", "browser", "skills", "commerce", "delegation"}
 }
 
+func DefaultLocalToolAllowlist(hasWorkspace bool) []string {
+	allow := []string{"orchestration", "memory", "web", "browser", "skills", "commerce", "delegation"}
+	if hasWorkspace {
+		allow = append(allow, "workspace", "process")
+	}
+	return allow
+}
+
 func childToolAllowlist() []string {
 	return []string{"orchestration", "memory", "web", "browser", "skills"}
 }

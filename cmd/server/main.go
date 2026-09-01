@@ -25,6 +25,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/google"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/connectors/granola"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/conversations"
+	"github.com/kishansagathiya/donna/donna-server-go/internal/desktop"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/employees"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/errreport"
 	"github.com/kishansagathiya/donna/donna-server-go/internal/featureflags"
@@ -93,6 +94,8 @@ func main() {
 	preferencesStore := &storage.Preferences{DB: supa, Enabled: supa.Enabled()}
 	actionsStore := &storage.ActionsStore{DB: supa, Enabled: supa.Enabled()}
 	agentsStore := &storage.AgentsStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
+	desktopStore := &storage.DesktopStore{DB: supa, Enabled: cfg.CloudAgentsEnabled && supa.Enabled()}
+	desktopHub := desktop.NewHub()
 	jobStore := &storage.BackgroundJobs{DB: supa, Enabled: cfg.BackgroundJobsEnabled && supa.Enabled()}
 	chatgptImportStore := &storage.ChatGPTImports{DB: supa, Enabled: supa.Enabled()}
 	var chatgptBlobs storage.ImportBlobStore
@@ -130,6 +133,7 @@ func main() {
 		"memoryRetrieval":  cfg.MemoryV2Retrieval,
 		"backgroundJobs":   cfg.BackgroundJobsEnabled,
 		"cloudAgents":      cfg.CloudAgentsEnabled,
+		"localAgentsV1":    cfg.LocalAgentsV1,
 	})
 
 	stt := providers.NewSTT(cfg.OpenRouterAPIKey, cfg.STTModel)
@@ -202,7 +206,15 @@ func main() {
 		Registry: agentRegistry,
 		WorkerID: "donna-server",
 	}
-	agentSpawner := &agents.Spawner{Store: agentsStore, Jobs: jobStore, Mem: memBridge, Skills: agentSkillProv}
+	agentSpawner := &agents.Spawner{
+		Store:   agentsStore,
+		Jobs:    jobStore,
+		Mem:     memBridge,
+		Skills:  agentSkillProv,
+		Desktop: desktopStore,
+		Flags:   flagResolver,
+		Events:  desktopHub,
+	}
 	agentRegistry.Register(agents.DelegateTaskTool(agentSpawner))
 	employeeService := &employees.Service{
 		Store:   employeesStore,
@@ -250,7 +262,10 @@ func main() {
 
 	actionExecutor := &actions.Executor{Store: actionsStore, Builtin: &actions.BuiltinRunner{}, Reminders: reminderService}
 	actionExecutor.ResumeAgent = func(ctx context.Context, userID, runID, note string) error {
-		_, err := agents.ResumeAfterApproval(ctx, agentsStore, jobStore, userID, runID, note)
+		run, err := agents.ResumeAfterApproval(ctx, agentsStore, jobStore, userID, runID, note)
+		if err == nil && run.ExecutionTarget == storage.ExecutionTargetLocal && run.AssignedDeviceID != nil {
+			desktopHub.Publish(userID, *run.AssignedDeviceID, "run.approval_resolved", map[string]any{"run_id": run.ID})
+		}
 		return err
 	}
 	actionMatcher := &actions.Matcher{Store: actionsStore, Executor: actionExecutor, Preferences: preferencesStore, AutoInternal: false, Agents: agentSpawner}
@@ -452,9 +467,18 @@ func main() {
 	}
 
 	if cfg.CloudAgentsEnabled {
-		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase, Actions: actionsStore}
+		agentsHandler := &agents.Handler{Store: agentsStore, Spawner: agentSpawner, Jobs: jobStore, WebAppBase: cfg.WebAppBase, Actions: actionsStore, Events: desktopHub}
 		agents.RegisterRoutes(r, authMiddleware, agentsHandler)
 		log.Print("cloud agents: /agent-runs enabled", map[string]any{"tools": agentRegistry.Len()})
+
+		desktopHandler := &desktop.Handler{
+			Devices: desktopStore,
+			Agents:  agentsStore,
+			Hub:     desktopHub,
+			LLM:     llm.WithModel(cfg.AgentModel),
+		}
+		desktop.RegisterRoutes(r, authMiddleware, desktopHandler)
+		log.Print("desktop local agents: /desktop enabled", map[string]any{"localAgentsV1Default": cfg.LocalAgentsV1})
 
 		employeesHandler := &employees.Handler{Service: employeeService, Store: employeesStore, Agents: agentsStore}
 		employees.RegisterRoutes(r, authMiddleware, employeesHandler)

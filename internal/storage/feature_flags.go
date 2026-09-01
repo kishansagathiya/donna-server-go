@@ -12,6 +12,7 @@ type NotesMemoryV2Overrides struct {
 	SmartTagging      *bool `json:"flag_notes_v2_smart_tagging"`
 	MemoryExtraction  *bool `json:"flag_memory_v2_extraction"`
 	MemoryRetrieval   *bool `json:"flag_memory_v2_retrieval"`
+	LocalAgentsV1     *bool `json:"flag_local_agents_v1"`
 }
 
 type FeatureFlags struct {
@@ -24,7 +25,7 @@ func (f *FeatureFlags) GetNotesMemoryV2Overrides(ctx context.Context, userID str
 		return NotesMemoryV2Overrides{}, nil
 	}
 	q := url.Values{}
-	q.Set("select", "flag_notes_v2_feed,flag_notes_v2_smart_tagging,flag_memory_v2_extraction,flag_memory_v2_retrieval")
+	q.Set("select", "flag_notes_v2_feed,flag_notes_v2_smart_tagging,flag_memory_v2_extraction,flag_memory_v2_retrieval,flag_local_agents_v1")
 	q.Set("user_id", "eq."+userID)
 
 	var rows []NotesMemoryV2Overrides
@@ -53,6 +54,9 @@ func (f *FeatureFlags) SetNotesMemoryV2Overrides(ctx context.Context, userID str
 	}
 	if overrides.MemoryRetrieval != nil {
 		body["flag_memory_v2_retrieval"] = *overrides.MemoryRetrieval
+	}
+	if overrides.LocalAgentsV1 != nil {
+		body["flag_local_agents_v1"] = *overrides.LocalAgentsV1
 	}
 	return f.DB.Upsert(ctx, "user_preferences", "user_id", body, nil)
 }

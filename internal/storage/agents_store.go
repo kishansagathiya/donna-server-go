@@ -30,6 +30,14 @@ const (
 
 	JobTypeAgentRun    = "agent_run"
 	TargetKindAgentRun = "agent_run"
+
+	ExecutionTargetCloud = "cloud"
+	ExecutionTargetLocal = "local"
+
+	WaitingDeviceOffline        = "device_offline"
+	WaitingDeviceBusy           = "device_busy"
+	WaitingWorkspaceUnavailable = "workspace_unavailable"
+	WaitingDesktopRequired      = "desktop_required"
 )
 
 func IsTerminalAgentStatus(status string) bool {
@@ -60,11 +68,15 @@ type AgentRun struct {
 	LeaseOwner      *string         `json:"lease_owner,omitempty"`
 	LeaseUntil      *string         `json:"lease_until,omitempty"`
 	LastHeartbeatAt *string         `json:"last_heartbeat_at,omitempty"`
-	Error           *string         `json:"error,omitempty"`
-	Result          json.RawMessage `json:"result,omitempty"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
-	FinishedAt      *string         `json:"finished_at,omitempty"`
+	Error            *string         `json:"error,omitempty"`
+	Result           json.RawMessage `json:"result,omitempty"`
+	ExecutionTarget  string          `json:"execution_target"`
+	AssignedDeviceID *string         `json:"assigned_device_id,omitempty"`
+	WorkspaceID      *string         `json:"workspace_id,omitempty"`
+	WaitingReason    *string         `json:"waiting_reason,omitempty"`
+	CreatedAt        string          `json:"created_at"`
+	UpdatedAt        string          `json:"updated_at"`
+	FinishedAt       *string         `json:"finished_at,omitempty"`
 }
 
 type AgentStep struct {
@@ -85,8 +97,12 @@ type NewAgentRunInput struct {
 	Goal           string
 	ToolAllowlist  []string
 	SelectedSkills []string
-	MaxSteps       int
-	MemorySnapshot json.RawMessage
+	MaxSteps         int
+	MemorySnapshot   json.RawMessage
+	ExecutionTarget  string
+	AssignedDeviceID *string
+	WorkspaceID      *string
+	WaitingReason    *string
 }
 
 type AgentsStore struct {
@@ -95,7 +111,7 @@ type AgentsStore struct {
 }
 
 func (s *AgentsStore) selectRunColumns() string {
-	return "id,user_id,intent_id,employee_id,schedule_id,parent_run_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,created_at,updated_at,finished_at"
+	return "id,user_id,intent_id,employee_id,schedule_id,parent_run_id,goal,status,plan,memory_snapshot,tool_allowlist,selected_skills,max_steps,step_count,redirect_pending,lease_owner,lease_until,last_heartbeat_at,error,result,execution_target,assigned_device_id,workspace_id,waiting_reason,created_at,updated_at,finished_at"
 }
 
 func (s *AgentsStore) selectStepColumns() string {
@@ -126,16 +142,21 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	if len(mem) == 0 {
 		mem = json.RawMessage(`{}`)
 	}
+	target := strings.TrimSpace(in.ExecutionTarget)
+	if target == "" {
+		target = ExecutionTargetCloud
+	}
 	body := map[string]any{
-		"user_id":         userID,
-		"goal":            goal,
-		"status":          AgentStatusQueued,
-		"plan":            []any{},
-		"memory_snapshot": mem,
-		"tool_allowlist":  allow,
-		"selected_skills": selected,
-		"max_steps":       maxSteps,
-		"step_count":      0,
+		"user_id":          userID,
+		"goal":             goal,
+		"status":           AgentStatusQueued,
+		"plan":             []any{},
+		"memory_snapshot":  mem,
+		"tool_allowlist":   allow,
+		"selected_skills":  selected,
+		"max_steps":        maxSteps,
+		"step_count":       0,
+		"execution_target": target,
 	}
 	if in.IntentID != nil && *in.IntentID != "" {
 		body["intent_id"] = *in.IntentID
@@ -148,6 +169,15 @@ func (s *AgentsStore) Create(ctx context.Context, userID string, in NewAgentRunI
 	}
 	if in.ParentRunID != nil && *in.ParentRunID != "" {
 		body["parent_run_id"] = *in.ParentRunID
+	}
+	if in.AssignedDeviceID != nil && *in.AssignedDeviceID != "" {
+		body["assigned_device_id"] = *in.AssignedDeviceID
+	}
+	if in.WorkspaceID != nil && *in.WorkspaceID != "" {
+		body["workspace_id"] = *in.WorkspaceID
+	}
+	if in.WaitingReason != nil && *in.WaitingReason != "" {
+		body["waiting_reason"] = *in.WaitingReason
 	}
 
 	var rows []AgentRun
@@ -349,6 +379,13 @@ func (s *AgentsStore) AppendStep(ctx context.Context, userID, runID string, seq 
 	}
 	var rows []AgentStep
 	if err := s.DB.Insert(ctx, "agent_steps", body, &rows); err != nil {
+		if isDuplicateStep(err) {
+			existing, getErr := s.stepBySeq(ctx, userID, runID, seq)
+			if getErr != nil {
+				return AgentStep{}, err
+			}
+			return existing, nil
+		}
 		return AgentStep{}, err
 	}
 	if len(rows) == 0 {
@@ -535,4 +572,131 @@ func (s *AgentsStore) Requeue(ctx context.Context, userID, runID string) (AgentR
 		"error":       nil,
 		"finished_at": nil,
 	})
+}
+
+func (s *AgentsStore) stepBySeq(ctx context.Context, userID, runID string, seq int) (AgentStep, error) {
+	q := url.Values{}
+	q.Set("select", s.selectStepColumns())
+	q.Set("agent_run_id", "eq."+runID)
+	q.Set("user_id", "eq."+userID)
+	q.Set("seq", "eq."+fmt.Sprintf("%d", seq))
+	q.Set("limit", "1")
+	var rows []AgentStep
+	if err := s.DB.Get(ctx, "agent_steps", q, &rows); err != nil {
+		return AgentStep{}, err
+	}
+	if len(rows) == 0 {
+		return AgentStep{}, fmt.Errorf("agent_step_not_found")
+	}
+	return rows[0], nil
+}
+
+func isDuplicateStep(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "duplicate") || strings.Contains(s, "unique") || strings.Contains(s, "23505")
+}
+
+// CountRunningOnDevice returns non-terminal running local runs on a device.
+func (s *AgentsStore) CountRunningOnDevice(ctx context.Context, userID, deviceID string) (int, error) {
+	if s == nil || !s.Enabled || s.DB == nil {
+		return 0, fmt.Errorf("agents_disabled")
+	}
+	q := url.Values{}
+	q.Set("select", "id")
+	q.Set("user_id", "eq."+userID)
+	q.Set("assigned_device_id", "eq."+deviceID)
+	q.Set("execution_target", "eq."+ExecutionTargetLocal)
+	q.Set("status", "eq."+AgentStatusRunning)
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := s.DB.Get(ctx, "agent_runs", q, &rows); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
+}
+
+// ListClaimableForDevice returns queued local runs (and expired-lease running runs)
+// assigned to the device, oldest first.
+func (s *AgentsStore) ListClaimableForDevice(ctx context.Context, userID, deviceID string, limit int) ([]AgentRun, error) {
+	if s == nil || !s.Enabled || s.DB == nil {
+		return nil, fmt.Errorf("agents_disabled")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	q := url.Values{}
+	q.Set("select", s.selectRunColumns())
+	q.Set("user_id", "eq."+userID)
+	q.Set("assigned_device_id", "eq."+deviceID)
+	q.Set("execution_target", "eq."+ExecutionTargetLocal)
+	q.Set("status", "in.(queued,running)")
+	q.Set("order", "created_at.asc")
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	var rows []AgentRun
+	if err := s.DB.Get(ctx, "agent_runs", q, &rows); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	out := make([]AgentRun, 0, len(rows))
+	for _, run := range rows {
+		if run.Status == AgentStatusQueued {
+			out = append(out, run)
+			continue
+		}
+		if run.LeaseUntil == nil || strings.TrimSpace(*run.LeaseUntil) == "" {
+			out = append(out, run)
+			continue
+		}
+		until, err := time.Parse(time.RFC3339Nano, *run.LeaseUntil)
+		if err != nil {
+			until, err = time.Parse(time.RFC3339, *run.LeaseUntil)
+		}
+		if err != nil || !until.After(now) {
+			out = append(out, run)
+		}
+	}
+	if out == nil {
+		out = []AgentRun{}
+	}
+	return out, nil
+}
+
+// ClaimForDevice takes the lease for a local run assigned to this device.
+func (s *AgentsStore) ClaimForDevice(ctx context.Context, userID, runID, deviceID, workerID string, lease time.Duration) (AgentRun, error) {
+	run, err := s.Get(ctx, userID, runID)
+	if err != nil {
+		return AgentRun{}, err
+	}
+	if run.ExecutionTarget != ExecutionTargetLocal {
+		return AgentRun{}, fmt.Errorf("not_local_run")
+	}
+	if run.AssignedDeviceID == nil || *run.AssignedDeviceID != deviceID {
+		return AgentRun{}, fmt.Errorf("run_not_assigned_to_device")
+	}
+	if IsTerminalAgentStatus(run.Status) {
+		return AgentRun{}, fmt.Errorf("run_not_claimable")
+	}
+	if run.Status == AgentStatusWaitingForUser {
+		return AgentRun{}, fmt.Errorf("run_waiting_for_user")
+	}
+	if run.Status == AgentStatusRunning && run.LeaseUntil != nil && strings.TrimSpace(*run.LeaseUntil) != "" {
+		until, parseErr := time.Parse(time.RFC3339Nano, *run.LeaseUntil)
+		if parseErr != nil {
+			until, parseErr = time.Parse(time.RFC3339, *run.LeaseUntil)
+		}
+		if parseErr == nil && until.After(time.Now().UTC()) {
+			owner := ""
+			if run.LeaseOwner != nil {
+				owner = *run.LeaseOwner
+			}
+			if owner != "" && owner != workerID {
+				return AgentRun{}, fmt.Errorf("run_leased")
+			}
+		}
+	}
+	return s.Heartbeat(ctx, userID, runID, workerID, lease)
 }

@@ -20,6 +20,7 @@ type Handler struct {
 	Jobs       *storage.BackgroundJobs
 	WebAppBase string
 	Actions    *storage.ActionsStore
+	Events     RunEventPublisher
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +38,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		IntentID    *string               `json:"intent_id"`
 		MaxSteps    int                   `json:"max_steps"`
 		Skills      []string              `json:"skills"`
+		WorkspaceID *string               `json:"workspace_id"`
 		Attachments []chat.ChatAttachment `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -54,11 +56,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		IntentID:       body.IntentID,
 		MaxSteps:       body.MaxSteps,
 		SelectedSkills: body.Skills,
+		WorkspaceID:    body.WorkspaceID,
 	})
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "disabled") {
 			status = http.StatusServiceUnavailable
+		}
+		if strings.Contains(err.Error(), "desktop_required") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "desktop_required", "message": "Install Donna Desktop to run agents on your Mac."})
+			return
 		}
 		if strings.Contains(err.Error(), "skill_not_found") {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "skill_not_found", "message": err.Error()})
@@ -153,6 +160,7 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": "cancel_failed", "message": err.Error()})
 		return
 	}
+	h.publishRunEvent(run, "run.cancel", map[string]any{"run_id": run.ID})
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -222,6 +230,11 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	h.publishRunEvent(run, "run.redirect", map[string]any{"run_id": run.ID})
+	ledger := RedirectLedgerStatus(msg)
+	if ledger == "succeeded" {
+		h.publishRunEvent(run, "run.approval_resolved", map[string]any{"run_id": run.ID, "status": "approved"})
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -230,6 +243,16 @@ func (h *Handler) settleApprovalLedger(ctx context.Context, userID, runID, msg s
 		return
 	}
 	_ = h.Actions.SettleProposedForAgentRun(ctx, userID, runID, RedirectLedgerStatus(msg))
+}
+
+func (h *Handler) publishRunEvent(run storage.AgentRun, kind string, payload map[string]any) {
+	if h == nil || h.Events == nil || run.AssignedDeviceID == nil {
+		return
+	}
+	if run.ExecutionTarget != storage.ExecutionTargetLocal {
+		return
+	}
+	h.Events.Publish(run.UserID, *run.AssignedDeviceID, kind, payload)
 }
 
 func RedirectLedgerStatus(msg string) string {

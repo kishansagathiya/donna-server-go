@@ -8,7 +8,7 @@ import (
 	"github.com/kishansagathiya/donna/donna-server-go/internal/pipeline/tools"
 )
 
-func interactiveBrowserTools(client *tools.BrowserClient) []RegisteredTool {
+func interactiveBrowserTools(client BrowserSession) []RegisteredTool {
 	if client == nil {
 		return nil
 	}
@@ -20,7 +20,7 @@ func interactiveBrowserTools(client *tools.BrowserClient) []RegisteredTool {
 	}
 }
 
-func browserNavigateTool(client *tools.BrowserClient) RegisteredTool {
+func browserNavigateTool(client BrowserSession) RegisteredTool {
 	return RegisteredTool{
 		Toolset: "browser",
 		Definition: providers.ToolDefinition{
@@ -52,7 +52,7 @@ func browserNavigateTool(client *tools.BrowserClient) RegisteredTool {
 	}
 }
 
-func browserSnapshotTool(client *tools.BrowserClient) RegisteredTool {
+func browserSnapshotTool(client BrowserSession) RegisteredTool {
 	return RegisteredTool{
 		Toolset: "browser",
 		Definition: providers.ToolDefinition{
@@ -73,7 +73,7 @@ func browserSnapshotTool(client *tools.BrowserClient) RegisteredTool {
 	}
 }
 
-func browserClickTool(client *tools.BrowserClient) RegisteredTool {
+func browserClickTool(client BrowserSession) RegisteredTool {
 	return RegisteredTool{
 		Toolset: "browser",
 		Definition: providers.ToolDefinition{
@@ -107,7 +107,7 @@ func browserClickTool(client *tools.BrowserClient) RegisteredTool {
 	}
 }
 
-func browserTypeTool(client *tools.BrowserClient) RegisteredTool {
+func browserTypeTool(client BrowserSession) RegisteredTool {
 	return RegisteredTool{
 		Toolset: "browser",
 		Definition: providers.ToolDefinition{

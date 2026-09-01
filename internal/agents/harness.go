@@ -79,7 +79,7 @@ type Harness struct {
 	Budgets   Budgets
 	System    string // optional override system prompt prefix
 	Approvals ApprovalRecorder
-	Browser   SessionCloser
+	Browser   BrowserSession
 }
 
 // Run executes (or resumes) one agent_run until terminal, waiting_for_user, or cancel.

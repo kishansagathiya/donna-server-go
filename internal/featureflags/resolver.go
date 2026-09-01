@@ -13,6 +13,7 @@ type NotesMemoryV2 struct {
 	SmartTagging     bool `json:"smartTagging"`
 	MemoryExtraction bool `json:"memoryExtraction"`
 	MemoryRetrieval  bool `json:"memoryRetrieval"`
+	LocalAgentsV1    bool `json:"localAgentsV1"`
 }
 
 type Resolver struct {
@@ -27,6 +28,7 @@ func (r *Resolver) NotesMemoryV2ForUser(ctx context.Context, userID string) (Not
 		out.SmartTagging = r.Defaults.NotesV2SmartTagging
 		out.MemoryExtraction = r.Defaults.MemoryV2Extraction
 		out.MemoryRetrieval = r.Defaults.MemoryV2Retrieval
+		out.LocalAgentsV1 = r.Defaults.LocalAgentsV1
 	}
 	if r == nil || r.Store == nil || userID == "" {
 		return out, nil
@@ -46,6 +48,9 @@ func (r *Resolver) NotesMemoryV2ForUser(ctx context.Context, userID string) (Not
 	}
 	if overrides.MemoryRetrieval != nil {
 		out.MemoryRetrieval = *overrides.MemoryRetrieval
+	}
+	if overrides.LocalAgentsV1 != nil {
+		out.LocalAgentsV1 = *overrides.LocalAgentsV1
 	}
 	return out, nil
 }

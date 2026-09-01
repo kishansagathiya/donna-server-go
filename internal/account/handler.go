@@ -89,6 +89,7 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 			SmartTagging     *bool `json:"smartTagging"`
 			MemoryExtraction *bool `json:"memoryExtraction"`
 			MemoryRetrieval  *bool `json:"memoryRetrieval"`
+			LocalAgentsV1    *bool `json:"localAgentsV1"`
 		} `json:"experimental"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -163,6 +164,7 @@ func (h *Handler) updatePreferences(w http.ResponseWriter, r *http.Request, user
 			SmartTagging:     body.Experimental.SmartTagging,
 			MemoryExtraction: body.Experimental.MemoryExtraction,
 			MemoryRetrieval:  body.Experimental.MemoryRetrieval,
+			LocalAgentsV1:    body.Experimental.LocalAgentsV1,
 		}
 		if err := h.Flags.Store.SetNotesMemoryV2Overrides(r.Context(), userID, overrides); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "feature_flags_failed", "message": err.Error()})

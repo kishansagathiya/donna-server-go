@@ -49,7 +49,7 @@ func TestHandler_getPreferencesUsesDefault(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Body.String(); got != "{\"available_models\":[\"provider/default\",\"provider/other\"],\"available_personas\":null,\"experimental\":{\"notesFeed\":false,\"smartTagging\":false,\"memoryExtraction\":false,\"memoryRetrieval\":false},\"llm_model\":\"provider/default\",\"persona\":\"companion\",\"persona_custom\":\"\",\"timezone\":\"\"}\n" {
+	if got := rec.Body.String(); got != "{\"available_models\":[\"provider/default\",\"provider/other\"],\"available_personas\":null,\"experimental\":{\"notesFeed\":false,\"smartTagging\":false,\"memoryExtraction\":false,\"memoryRetrieval\":false,\"localAgentsV1\":false},\"llm_model\":\"provider/default\",\"persona\":\"companion\",\"persona_custom\":\"\",\"timezone\":\"\"}\n" {
 		t.Fatalf("body = %s", got)
 	}
 }
