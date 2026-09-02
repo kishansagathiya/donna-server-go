@@ -17,6 +17,10 @@ type ToolResult struct {
 	// Finish ends the agent run successfully after this tool result is logged.
 	Finish       bool
 	FinishResult map[string]any
+	// Outcome is optional. Omitted values are resolved by ResolveOutcome.
+	Outcome ToolOutcome
+	// Error is optional structured error text persisted on failed/blocked results.
+	Error string
 }
 
 // ToolHandler executes one tool call for an agent run.

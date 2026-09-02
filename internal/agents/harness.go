@@ -118,12 +118,14 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 
 	messages, plan, seq, err := h.bootstrapMessages(runCtx, run)
 	if err != nil {
-		return h.fail(runCtx, run, seq, err.Error())
+		return h.fail(runCtx, run, seq, err.Error(), nil)
 	}
 	seq++
 	if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepStatus, map[string]any{"text": "started"}); err != nil {
 		return err
 	}
+
+	var pendingRecovery []string
 
 	rc := &RunContext{
 		UserID: run.UserID,
@@ -141,10 +143,10 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 
 	for step := 0; step < budgets.MaxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
-			return h.fail(runCtx, run, seq, "context_cancelled")
+			return h.fail(runCtx, run, seq, "context_cancelled", pendingRecovery)
 		}
 		if time.Now().After(deadline) {
-			return h.fail(runCtx, run, seq, "wall_clock_exceeded")
+			return h.fail(runCtx, run, seq, "wall_clock_exceeded", pendingRecovery)
 		}
 
 		// Refresh cancel / redirect from store.
@@ -184,7 +186,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 		})
 		if err != nil {
 			log.Warn("agent llm failed", map[string]any{"runId": log.ShortID(run.ID), "error": err.Error()})
-			return h.fail(runCtx, run, seq, "llm_error: "+err.Error())
+			return h.fail(runCtx, run, seq, "llm_error: "+err.Error(), pendingRecovery)
 		}
 
 		closed, err := h.closed(runCtx, run)
@@ -201,9 +203,9 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				content = "Done."
 			}
 			seq++
-			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepThought, map[string]any{
-				"text": content,
-			}); err != nil {
+			thoughtPayload := map[string]any{"text": content}
+			attachRecovery(thoughtPayload, &pendingRecovery)
+			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepThought, thoughtPayload); err != nil {
 				return err
 			}
 			if looksLikeClarifyingQuestion(content) {
@@ -237,22 +239,25 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 		messages = append(messages, assistant)
 		if strings.TrimSpace(meta.Content) != "" {
 			seq++
-			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepThought, map[string]any{
-				"text": meta.Content,
-			}); err != nil {
+			thoughtPayload := map[string]any{"text": meta.Content}
+			attachRecovery(thoughtPayload, &pendingRecovery)
+			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepThought, thoughtPayload); err != nil {
 				return err
 			}
 		}
 
+		var failedThisRound []string
 		for _, call := range meta.ToolCalls {
 			name := call.Function.Name
 			args := call.Function.Arguments
 			seq++
-			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepToolCall, map[string]any{
+			callPayload := map[string]any{
 				"id":   call.ID,
 				"name": name,
 				"args": jsonRawOrString(args),
-			}); err != nil {
+			}
+			attachRecovery(callPayload, &pendingRecovery)
+			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepToolCall, callPayload); err != nil {
 				return err
 			}
 
@@ -274,6 +279,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				payload := map[string]any{
 					"kind":     name,
 					"tool":     name,
+					"call_id":  call.ID,
 					"question": question,
 					"summary":  question,
 					"args":     argsMap,
@@ -308,6 +314,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 			tool, ok := h.Registry.Get(name)
 			var result ToolResult
 			var toolErr error
+			started := time.Now()
 			if !ok {
 				result = ToolResult{Content: "Error: unknown tool " + name}
 			} else {
@@ -315,21 +322,31 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				result, toolErr = tool.Handle(runCtx, rc, args)
 				plan = rc.Plan
 				if toolErr != nil {
-					result = ToolResult{Content: "Error: " + toolErr.Error()}
+					result = ToolResult{Content: "Error: " + toolErr.Error(), Error: toolErr.Error()}
 				}
 			}
+			durationMs := time.Since(started).Milliseconds()
+			outcome := ResolveOutcome(result, toolErr)
 
 			seq++
 			stepPayload := map[string]any{
-				"id":      call.ID,
-				"name":    name,
-				"content": truncate(result.Content, 8_000),
+				"id":          call.ID,
+				"name":        name,
+				"content":     truncate(result.Content, 8_000),
+				"outcome":     string(outcome),
+				"duration_ms": durationMs,
 			}
 			if result.Meta != nil {
 				stepPayload["meta"] = result.Meta
 			}
+			if errText := outcomeError(result, toolErr, outcome); errText != "" {
+				stepPayload["error"] = truncate(errText, 2_000)
+			}
 			if _, err := h.Store.AppendStep(runCtx, run.UserID, run.ID, seq, storage.AgentStepToolResult, stepPayload); err != nil {
 				return err
+			}
+			if outcome == OutcomeFailed || outcome == OutcomeBlocked {
+				failedThisRound = append(failedThisRound, call.ID)
 			}
 
 			messages = append(messages, providers.ChatMessage{
@@ -350,6 +367,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 				return h.succeed(runCtx, run, out)
 			}
 		}
+		pendingRecovery = failedThisRound
 
 		// Persist plan if updated.
 		if len(plan) > 0 {
@@ -358,7 +376,7 @@ func (h *Harness) run(ctx context.Context, run storage.AgentRun) error {
 		}
 	}
 
-	return h.fail(runCtx, run, seq, "max_steps_exceeded")
+	return h.fail(runCtx, run, seq, "max_steps_exceeded", pendingRecovery)
 }
 
 func (h *Harness) bootstrapMessages(ctx context.Context, run storage.AgentRun) ([]providers.ChatMessage, []TodoItem, int, error) {
@@ -460,12 +478,16 @@ func (h *Harness) succeed(ctx context.Context, run storage.AgentRun, result map[
 	return err
 }
 
-func (h *Harness) fail(ctx context.Context, run storage.AgentRun, seq int, errText string) error {
+func (h *Harness) fail(ctx context.Context, run storage.AgentRun, seq int, errText string, recoveryFrom []string) error {
 	closed, err := h.closed(ctx, run)
 	if err != nil || closed {
 		return err
 	}
-	_, _ = h.Store.AppendStep(ctx, run.UserID, run.ID, seq+1, storage.AgentStepError, map[string]any{"error": errText})
+	payload := map[string]any{"error": errText}
+	if len(recoveryFrom) > 0 {
+		payload["recovery_from"] = append([]string(nil), recoveryFrom...)
+	}
+	_, _ = h.Store.AppendStep(ctx, run.UserID, run.ID, seq+1, storage.AgentStepError, payload)
 	_, err = h.Store.Finish(ctx, run.UserID, run.ID, storage.AgentStatusFailed, nil, errText)
 	return err
 }

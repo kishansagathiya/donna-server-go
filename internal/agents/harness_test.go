@@ -614,3 +614,263 @@ func TestExtractOptionsFromText(t *testing.T) {
 		t.Fatal("need at least two list items")
 	}
 }
+
+func scriptTool(name, content string, outcome ToolOutcome, handlerErr error, meta map[string]any) RegisteredTool {
+	return RegisteredTool{
+		Toolset: "orchestration",
+		Definition: providers.ToolDefinition{
+			Type: "function",
+			Function: providers.ToolFunctionSchema{
+				Name:        name,
+				Description: name,
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		},
+		Handle: func(ctx context.Context, runCtx *RunContext, argsJSON string) (ToolResult, error) {
+			if handlerErr != nil {
+				return ToolResult{}, handlerErr
+			}
+			return ToolResult{Content: content, Outcome: outcome, Meta: meta}, nil
+		},
+	}
+}
+
+func toolCall(id, name string) providers.ToolCall {
+	return providers.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: providers.ToolFunction{
+			Name:      name,
+			Arguments: `{}`,
+		},
+	}
+}
+
+func runHarness(t *testing.T, store *memRunStore, run storage.AgentRun, llm Completer, tools ...RegisteredTool) {
+	t.Helper()
+	reg := NewRegistry()
+	for _, tool := range tools {
+		reg.Register(tool)
+	}
+	h := &Harness{
+		Store:    store,
+		LLM:      llm,
+		Registry: reg,
+		WorkerID: "test",
+		Budgets:  Budgets{MaxSteps: 8, WallClock: time.Minute, Lease: time.Minute},
+	}
+	if err := h.Run(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func queuedRun(id, goal string) storage.AgentRun {
+	return storage.AgentRun{
+		ID:             id,
+		UserID:         "user-1",
+		Goal:           goal,
+		Status:         storage.AgentStatusQueued,
+		Plan:           json.RawMessage(`[]`),
+		MemorySnapshot: json.RawMessage(`{}`),
+		MaxSteps:       8,
+		ToolAllowlist:  []string{"orchestration"},
+	}
+}
+
+func stepMaps(t *testing.T, store *memRunStore, runID, kind string) []map[string]any {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var out []map[string]any
+	for _, st := range store.steps[runID] {
+		if kind != "" && st.Kind != kind {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(st.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		payload["_kind"] = st.Kind
+		payload["_seq"] = st.Seq
+		out = append(out, payload)
+	}
+	return out
+}
+
+func TestHarnessToolOutcomes(t *testing.T) {
+	run := queuedRun("run-outcomes", "test outcomes")
+	store := newMemRunStore(run)
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{ToolCalls: []providers.ToolCall{
+			toolCall("ok-1", "ok_tool"),
+			toolCall("fail-1", "fail_tool"),
+			toolCall("block-1", "block_tool"),
+			toolCall("exit-1", "exit_tool"),
+			toolCall("herr-1", "handler_err_tool"),
+		}},
+		{Content: "Wrapped up."},
+	}}
+	runHarness(t, store, run, llm,
+		scriptTool("ok_tool", "all good", "", nil, nil),
+		scriptTool("fail_tool", "Error: boom", "", nil, nil),
+		scriptTool("block_tool", "Refused: policy", "", nil, nil),
+		scriptTool("exit_tool", "exit=2", "", nil, map[string]any{"exit": 2}),
+		scriptTool("handler_err_tool", "", "", fmt.Errorf("handler exploded"), nil),
+	)
+
+	results := stepMaps(t, store, run.ID, storage.AgentStepToolResult)
+	if len(results) != 5 {
+		t.Fatalf("results=%d", len(results))
+	}
+	want := map[string]string{
+		"ok-1":    "succeeded",
+		"fail-1":  "failed",
+		"block-1": "blocked",
+		"exit-1":  "failed",
+		"herr-1":  "failed",
+	}
+	for _, payload := range results {
+		id, _ := payload["id"].(string)
+		got, _ := payload["outcome"].(string)
+		if want[id] != got {
+			t.Fatalf("id %s outcome=%s want %s payload=%v", id, got, want[id], payload)
+		}
+		if _, ok := payload["duration_ms"]; !ok {
+			t.Fatalf("missing duration_ms on %s", id)
+		}
+		if id != "ok-1" {
+			if _, ok := payload["error"]; !ok {
+				t.Fatalf("missing error on %s", id)
+			}
+		}
+	}
+}
+
+func TestHarnessApprovalCallID(t *testing.T) {
+	run := queuedRun("run-callid", "ask")
+	store := newMemRunStore(run)
+	args, _ := json.Marshal(map[string]any{"question": "Which airport?"})
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{
+			Content: "Need a choice.",
+			ToolCalls: []providers.ToolCall{{
+				ID:       "call-ask",
+				Type:     "function",
+				Function: providers.ToolFunction{Name: "ask_user", Arguments: string(args)},
+			}},
+		},
+	}}
+	reg := NewRegistry()
+	reg.Register(askUserTool())
+	h := &Harness{
+		Store:    store,
+		LLM:      llm,
+		Registry: reg,
+		WorkerID: "test",
+		Budgets:  Budgets{MaxSteps: 5, WallClock: time.Minute, Lease: time.Minute},
+	}
+	if err := h.Run(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	approvals := stepMaps(t, store, run.ID, storage.AgentStepApprovalRequest)
+	if len(approvals) != 1 {
+		t.Fatalf("approvals=%d", len(approvals))
+	}
+	if approvals[0]["call_id"] != "call-ask" {
+		t.Fatalf("call_id=%v", approvals[0]["call_id"])
+	}
+}
+
+func TestHarnessRecoveryLinks(t *testing.T) {
+	run := queuedRun("run-recovery", "retry after fail")
+	store := newMemRunStore(run)
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{ToolCalls: []providers.ToolCall{toolCall("c1", "fail_tool")}},
+		{Content: "Trying a different approach.", ToolCalls: []providers.ToolCall{toolCall("c2", "ok_tool")}},
+		{Content: "Done after recovery."},
+	}}
+	runHarness(t, store, run, llm,
+		scriptTool("fail_tool", "Error: first try", "", nil, nil),
+		scriptTool("ok_tool", "recovered", "", nil, nil),
+	)
+
+	var recovered []map[string]any
+	for _, payload := range stepMaps(t, store, run.ID, "") {
+		if payload["recovery_from"] != nil {
+			recovered = append(recovered, payload)
+		}
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("expected one recovery event, got %d: %#v", len(recovered), recovered)
+	}
+	ids, _ := recovered[0]["recovery_from"].([]any)
+	if len(ids) != 1 || ids[0] != "c1" {
+		t.Fatalf("recovery_from=%v", recovered[0]["recovery_from"])
+	}
+}
+
+func TestHarnessConsecutiveFailures(t *testing.T) {
+	run := queuedRun("run-consec", "fail twice")
+	store := newMemRunStore(run)
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{ToolCalls: []providers.ToolCall{toolCall("a1", "fail_tool")}},
+		{ToolCalls: []providers.ToolCall{toolCall("a2", "fail_tool")}},
+		{Content: "Gave up? No — succeeded.", ToolCalls: []providers.ToolCall{toolCall("a3", "ok_tool")}},
+		{Content: "Finished."},
+	}}
+	runHarness(t, store, run, llm,
+		scriptTool("fail_tool", "Error: still broken", "", nil, nil),
+		scriptTool("ok_tool", "ok", "", nil, nil),
+	)
+
+	var recovered []map[string]any
+	for _, payload := range stepMaps(t, store, run.ID, "") {
+		if payload["recovery_from"] != nil {
+			recovered = append(recovered, payload)
+		}
+	}
+	if len(recovered) != 2 {
+		t.Fatalf("expected two recovery events, got %d: %#v", len(recovered), recovered)
+	}
+	first, _ := recovered[0]["recovery_from"].([]any)
+	second, _ := recovered[1]["recovery_from"].([]any)
+	if len(first) != 1 || first[0] != "a1" {
+		t.Fatalf("first recovery=%v", recovered[0]["recovery_from"])
+	}
+	if len(second) != 1 || second[0] != "a2" {
+		t.Fatalf("second recovery=%v", recovered[1]["recovery_from"])
+	}
+}
+
+func TestHarnessNoRecoveryWithinSameResponse(t *testing.T) {
+	run := queuedRun("run-same", "parallel calls")
+	store := newMemRunStore(run)
+	llm := &scriptedLLM{script: []providers.ChatCompletionMetadata{
+		{ToolCalls: []providers.ToolCall{
+			toolCall("p1", "fail_tool"),
+			toolCall("p2", "ok_tool"),
+		}},
+		{Content: "Noted the failure."},
+	}}
+	runHarness(t, store, run, llm,
+		scriptTool("fail_tool", "Error: no", "", nil, nil),
+		scriptTool("ok_tool", "yes", "", nil, nil),
+	)
+
+	for _, payload := range stepMaps(t, store, run.ID, storage.AgentStepToolCall) {
+		if payload["recovery_from"] != nil {
+			t.Fatalf("same-response tool_call should not recover: %#v", payload)
+		}
+	}
+	thoughts := stepMaps(t, store, run.ID, storage.AgentStepThought)
+	var found bool
+	for _, payload := range thoughts {
+		ids, _ := payload["recovery_from"].([]any)
+		if len(ids) == 1 && ids[0] == "p1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected next-turn thought to recover from p1, thoughts=%#v", thoughts)
+	}
+}

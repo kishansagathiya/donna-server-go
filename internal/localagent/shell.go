@@ -54,7 +54,11 @@ func shellTool(root string) agents.RegisteredTool {
 				return agents.ToolResult{Content: "Error: command is required"}, nil
 			}
 			if destructiveShell.MatchString(command) {
-				return agents.ToolResult{Content: "Error: destructive command requires request_approval first and is blocked until approved."}, nil
+				return agents.ToolResult{
+					Content: "Error: destructive command requires request_approval first and is blocked until approved.",
+					Outcome: agents.OutcomeBlocked,
+					Error:   "destructive command requires approval",
+				}, nil
 			}
 			cwd, err := ResolveWorkspacePath(root, ".")
 			if err != nil {
@@ -94,7 +98,7 @@ func shellTool(root string) agents.RegisteredTool {
 			out := strings.TrimSpace(stdout.String())
 			errOut := strings.TrimSpace(stderr.String())
 			content := fmt.Sprintf("exit=%d duration_ms=%d\nstdout:\n%s\nstderr:\n%s", exit, time.Since(started).Milliseconds(), out, errOut)
-			return agents.ToolResult{
+			result := agents.ToolResult{
 				Content: content,
 				Meta: map[string]any{
 					"command":     command,
@@ -102,7 +106,12 @@ func shellTool(root string) agents.RegisteredTool {
 					"exit":        exit,
 					"duration_ms": time.Since(started).Milliseconds(),
 				},
-			}, nil
+			}
+			if exit != 0 {
+				result.Outcome = agents.OutcomeFailed
+				result.Error = fmt.Sprintf("exit %d", exit)
+			}
+			return result, nil
 		},
 	}
 }
